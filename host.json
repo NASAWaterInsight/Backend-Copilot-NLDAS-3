@@ -1,11 +1,21 @@
 {
   "version": "2.0",
+  "functionTimeout": "00:05:00",
   "logging": {
     "applicationInsights": {
       "samplingSettings": {
         "isEnabled": true,
-        "excludedTypes": "Request"
+        "excludedTypes": "Request",
+        "maxTelemetryItemsPerSecond": 5
       }
+    }
+  },
+  "extensions": {
+    "http": {
+      "routePrefix": "",
+      "maxOutstandingRequests": 200,
+      "maxConcurrentRequests": 100,
+      "dynamicThrottlesEnabled": true
     }
   },
   "extensionBundle": {

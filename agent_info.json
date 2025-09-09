@@ -1,0 +1,47 @@
+{
+  "project_endpoint": "https://nldas-test-resource.services.ai.azure.com/api/projects/nldas-test",
+  "agents": {
+    "text": {
+      "id": "asst_DkBaVDSXzuKYGGaGQpXwbTt7",
+      "name": "nldas3-text-agent",
+      "model": "gpt-4o",
+      "capabilities": [
+        "grounded-qa",
+        "metadata-lookup",
+        "explanations",
+        "weather-data-retrieval",
+        "conditional-visualization",
+        "dynamic-code-execution"
+      ],
+      "tools": [
+        {
+          "type": "azure_ai_search",
+          "name": "searchnldas3",
+          "connection_id": "/subscriptions/91d4b233-4cbb-467f-9fda-5bfa9cfae7ce/resourceGroups/rg-mghaziza-8806/providers/Microsoft.CognitiveServices/accounts/nldas-test-resource/projects/nldas-test/connections/searchnldas3",
+          "index_name": "multimodal-rag-precip-temp2"
+        },
+        {
+          "type": "function",
+          "name": "get_weather_data",
+          "description": "NLDAS-3 weather data retrieval function with conditional visualization"
+        },
+        {
+          "type": "function",
+          "name": "execute_custom_code",
+          "description": "Dynamic Python code execution for complex NLDAS-3 analysis"
+        }
+      ]
+    },
+    "visualization": {
+      "id": "asst_1KDbqpu7N6gAws8t9WbPbIOv",
+      "name": "nldas3-visualization-agent",
+      "model": "gpt-4o",
+      "capabilities": [
+        "image-spec-generation",
+        "map-mockups",
+        "figure-captions"
+      ],
+      "tools": []
+    }
+  }
+}

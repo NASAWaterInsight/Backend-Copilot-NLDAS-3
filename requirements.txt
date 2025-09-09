@@ -1,5 +1,11 @@
-# DO NOT include azure-functions-worker in this file
-# The Python Worker is managed by Azure Functions platform
-# Manually managing azure-functions-worker may cause unexpected issues
-
-azure-functions
+azure-identity
+azure-keyvault-secrets
+azure-ai-projects
+fsspec
+xarray
+zarr
+s3fs
+adlfs
+matplotlib>=3.7.0
+azure-storage-blob>=12.19.0
+azure-functions>=1.23.0
