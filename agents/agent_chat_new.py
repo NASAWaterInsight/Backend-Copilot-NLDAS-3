@@ -65,42 +65,28 @@ def handle_chat_request(data):
 
         Available functions and data:
         - load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day) - loads NLDAS-3 data
-        - save_plot_to_blob_simple(figure, filename, account_key) - saves plots and RETURNS the viewable URL
+        - save_plot_to_blob_simple(figure, filename, account_key) - saves static plots and RETURNS the viewable URL
+        - save_geojson_to_blob(data, filename, account_key) - saves interactive data as GeoJSON
+        - create_azure_map_html(data_url, variable, center) - creates interactive Azure Maps
         - find_available_kerchunk_files(ACCOUNT_NAME, account_key) - lists available dates
         - NLDAS-3 variables: 'Tair' (temperature), 'Rainf' (precipitation), 'Qair' (humidity)
-        - Find the coordinates of the region in the request lat and lon
         - Available dates: January 1-22, 2023
 
-        For visualizations/maps:
-        - Create matplotlib figures with fig, ax = plt.subplots(figsize=(12, 8))
-        - Use appropriate colormaps for different variables:
-        * Temperature ('Tair'): cmap='RdYlBu_r' (red=hot, blue=cold)
-        * Precipitation ('Rainf'): cmap='Blues' (light=dry, dark=wet)
-        * Humidity ('Qair'): cmap='BuGn' (light=dry, dark=humid)
-        - Use xarray plotting: data.plot(ax=ax, cmap=colormap, add_colorbar=True)
-        - Add proper titles: ax.set_title('Your Title')
-        - IMPORTANT: Always capture the URL like this:
-        url = save_plot_to_blob_simple(fig, 'filename.png', account_key)
-        - Set result = url (so users can click to view the image)
+        For static visualizations (matplotlib):
+        - Create figures: fig, ax = plt.subplots(figsize=(12, 8))
+        - Choose colormaps: 'RdYlBu_r' for temperature, 'Blues' for precipitation
+        - Save: url = save_plot_to_blob_simple(fig, 'filename.png', account_key)
+        - Set result = url
 
-        Example plotting code:
-        fig, ax = plt.subplots(figsize=(12, 8))
-        # Choose colormap based on variable
-        if 'Tair' in variable_name:
-            colormap = 'RdYlBu_r'  # Temperature: Red-Yellow-Blue reversed
-        elif 'Rainf' in variable_name:
-            colormap = 'Blues'     # Precipitation: Blues
-        elif 'Qair' in variable_name:
-            colormap = 'BuGn'      # Humidity: Blue-Green
-        else:
-            colormap = 'viridis'   # Default scientific colormap
+        For interactive visualizations (Azure Maps):
+        - Convert data to GeoJSON: geojson_url = save_geojson_to_blob(data, 'filename.geojson', account_key)
+        - Create interactive map: html_url = create_azure_map_html(geojson_url, 'temperature', [39.0, -76.5])
+        - Set result = html_url (users get zoomable, interactive map)
 
-        data.plot(ax=ax, cmap=colormap, add_colorbar=True)
-        ax.set_title('Your Title')
+        Choose interactive for: "interactive", "zoomable", "explore", "Azure Maps"
+        Choose static for: "quick", "simple", "plot", "chart"
 
         For calculations: Set result = your_calculated_number
-        For visualizations: Set result = the_blob_url_from_save_function
-
         Always set result = your_result_value at the end."""
         
         message = project_client.agents.messages.create(

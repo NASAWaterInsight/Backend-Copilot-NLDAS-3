@@ -1,4 +1,4 @@
-# create_agents.py — Create text & image agents and emit agent_info.json
+# create agent_info.json
 
 import json
 from azure.identity import DefaultAzureCredential
@@ -127,7 +127,7 @@ if search_conn_id and AI_SEARCH_INDEX_NAME:
         index_connection_id=search_conn_id,
         index_name=AI_SEARCH_INDEX_NAME,
         query_type=AzureAISearchQueryType.SIMPLE,
-        top_k=10
+        top_k=50
     )
 
 # ---------- Create agents ----------
@@ -147,13 +147,7 @@ text_tool_resources = ai_search_tool.resources if ai_search_tool else None
 text_agent = proj.agents.create_agent(
     model=TEXT_MODEL,
     name="nldas3-text-agent",
-    # In the text_agent creation section, replace the instructions with:
-
-# Replace the instructions section with this simplified version:
-
-# Updated instructions to prevent variable override:
-
-instructions=(
+    instructions=(
     "You are a meteorological data analyst for NLDAS-3. Use execute_custom_code to write Python code for ALL requests.\n\n"
     
     "NLDAS-3 COVERAGE:\n"
