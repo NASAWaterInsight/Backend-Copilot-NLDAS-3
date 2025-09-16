@@ -203,97 +203,20 @@ def load_specific_date_kerchunk(account_name: str, account_key: str, year: int, 
     expected_path = f"{KERCHUNK_CONTAINER}/{expected_filename}"
     
     try:
-        fs = _kerchunk_fs(account_name, account_key)
+        # First, get list of available dates to handle padding errors gracefully
+        available_dates = find_available_kerchunk_files(account_name, account_key)
         
-        if fs.exists(expected_path):
-            try:
-                # Check file size first
-                file_info = fs.info(expected_path)
-                file_size = file_info.get('size', 0)
-                logging.info(f"Loading kerchunk file: {expected_path} (size: {file_size} bytes)")
-                
-                if file_size == 0:
-                    raise ValueError(f"Kerchunk file {expected_path} is empty (0 bytes)")
-                
-                # Load the specific date file
-                with fs.open(expected_path, "r") as f:
-                    content = f.read()
-                    
-                if not content.strip():
-                    raise ValueError(f"Kerchunk file {expected_path} contains no data")
-                
-                # Try to parse JSON
-                try:
-                    refs = json.loads(content)
-                except json.JSONDecodeError as je:
-                    # Show first 200 chars of content for debugging
-                    content_preview = content[:200] if len(content) > 200 else content
-                    raise ValueError(f"Invalid JSON in {expected_path}. Error: {je}. Content preview: {content_preview}")
-                
-            except Exception as file_error:
-                logging.error(f"Error loading {expected_path}: {file_error}")
-                # Fall back to finding available dates
-                available_dates = find_available_kerchunk_files(account_name, account_key)
-                
-                if not available_dates:
-                    raise FileNotFoundError("No valid kerchunk files found")
-                
-                # Use the first available date as fallback
-                fallback = available_dates[0]
-                logging.info(f"Using fallback date: {fallback['date'].date()}")
-                
-                fallback_path = f"{KERCHUNK_CONTAINER}/{fallback['filename']}"
-                
-                try:
-                    with fs.open(fallback_path, "r") as f:
-                        refs = json.load(f)
-                except Exception as fallback_error:
-                    raise Exception(f"Both primary and fallback files failed. Primary error: {file_error}. Fallback error: {fallback_error}")
-                
-                debug = {
-                    "kerchunk_container": KERCHUNK_CONTAINER,
-                    "kerchunk_blob_used": fallback_path,
-                    "kerchunk_is_combined": False,
-                    "requested_date": str(dt.date()),
-                    "actual_date": str(fallback["date"].date()),
-                    "fallback_reason": str(file_error),
-                    "nldas_date_format": fallback["nldas_format"],
-                    "kerchunk_ref_count": len(refs.get("refs", {})),
-                }
-            else:
-                # File loaded successfully
-                debug = {
-                    "kerchunk_container": KERCHUNK_CONTAINER,
-                    "kerchunk_blob_used": expected_path,
-                    "kerchunk_is_combined": False,
-                    "requested_date": str(dt.date()),
-                    "nldas_date_format": nldas_date,
-                    "kerchunk_ref_count": len(refs.get("refs", {})),
-                    "file_size_bytes": file_size,
-                }
-            
-            mapper = fsspec.get_mapper(
-                "reference://",
-                fo=refs,
-                remote_protocol="az",
-                remote_options={"account_name": account_name, "account_key": account_key},
-            )
-            
-            ds = xr.open_dataset(mapper, engine="zarr", backend_kwargs={"consolidated": False})
-            return ds, debug
-            
-        else:
-            # File doesn't exist, find closest date
-            available_dates = find_available_kerchunk_files(account_name, account_key)
-            
-            if not available_dates:
-                raise FileNotFoundError("No kerchunk files found")
-            
-            # Show available dates for debugging
-            date_list = [d['date'].strftime('%Y-%m-%d') for d in available_dates[:5]]
-            logging.info(f"Requested date {dt.date()} not found. Available dates: {date_list}")
-            
-            # Find closest date
+        if not available_dates:
+            raise FileNotFoundError("No kerchunk files found in container")
+        
+        # Check if requested date is available
+        requested_date_available = any(
+            d["date"].date() == dt.date() for d in available_dates
+        )
+        
+        if not requested_date_available:
+            # Find closest available date
+            logging.warning(f"Date {dt.date()} not available. Finding closest date...")
             target_date = dt
             closest = min(available_dates, key=lambda x: abs((x["date"] - target_date).days))
             days_diff = abs((closest["date"] - target_date).days)
@@ -305,27 +228,113 @@ def load_specific_date_kerchunk(account_name: str, account_key: str, year: int, 
                     f"Available dates: {available_range}"
                 )
             
-            # Load closest date
-            closest_path = f"{KERCHUNK_CONTAINER}/{closest['filename']}"
-            logging.info(f"Loading closest date: {closest_path}")
+            # Use closest date
+            expected_path = closest["path"]
+            expected_filename = closest["filename"]
+            logging.info(f"Using closest available date: {closest['date'].date()}")
+        
+        fs = _kerchunk_fs(account_name, account_key)
+        
+        try:
+            # Check file size first
+            file_info = fs.info(expected_path)
+            file_size = file_info.get('size', 0)
+            logging.info(f"Loading kerchunk file: {expected_path} (size: {file_size} bytes)")
             
+            if file_size == 0:
+                raise ValueError(f"Kerchunk file {expected_path} is empty (0 bytes)")
+            
+            # Load the file with enhanced error handling
+            with fs.open(expected_path, "r") as f:
+                content = f.read()
+                
+            if not content.strip():
+                raise ValueError(f"Kerchunk file {expected_path} contains no data")
+            
+            # Try to parse JSON with better error handling
             try:
-                with fs.open(closest_path, "r") as f:
-                    refs = json.load(f)
+                if not content or not content.strip():
+                    raise ValueError(f"Kerchunk file {expected_path} is empty or contains only whitespace")
+                
+                # Log content preview for debugging
+                content_preview = content[:100] if content else "EMPTY"
+                logging.debug(f"JSON content preview: {content_preview}")
+                
+                refs = json.loads(content)
+                
             except json.JSONDecodeError as je:
-                raise Exception(f"Invalid JSON in closest date file {closest_path}: {je}")
+                # Enhanced error logging
+                logging.error(f"JSON decode error in {expected_path}: {je}")
+                logging.error(f"Content length: {len(content) if content else 0}")
+                logging.error(f"Content preview: {content[:200] if content else 'EMPTY'}")
+                
+                # If JSON parsing fails, try fallback immediately
+                raise ValueError(f"Invalid JSON in {expected_path}. Error: {je}")
             
+            # Validate refs structure
+            if not isinstance(refs, dict) or "refs" not in refs:
+                raise ValueError(f"Invalid kerchunk structure in {expected_path}")
+            
+        except Exception as file_error:
+            logging.error(f"Error loading {expected_path}: {file_error}")
+            
+            # Enhanced fallback logic - try multiple available dates
+            fallback_attempts = 0
+            max_fallback_attempts = 3
+            
+            for fallback_candidate in available_dates[:max_fallback_attempts]:
+                if fallback_candidate["path"] == expected_path:
+                    continue  # Skip the one that failed
+                
+                fallback_attempts += 1
+                logging.info(f"Trying fallback {fallback_attempts}: {fallback_candidate['date'].date()}")
+                
+                try:
+                    fallback_path = fallback_candidate["path"]
+                    with fs.open(fallback_path, "r") as f:
+                        fallback_content = f.read()
+                    
+                    if not fallback_content.strip():
+                        continue
+                    
+                    refs = json.loads(fallback_content)
+                    
+                    if isinstance(refs, dict) and "refs" in refs:
+                        logging.info(f"Successfully loaded fallback date: {fallback_candidate['date'].date()}")
+                        
+                        debug = {
+                            "kerchunk_container": KERCHUNK_CONTAINER,
+                            "kerchunk_blob_used": fallback_path,
+                            "kerchunk_is_combined": False,
+                            "requested_date": str(dt.date()),
+                            "actual_date": str(fallback_candidate["date"].date()),
+                            "fallback_reason": f"Original file error: {str(file_error)}",
+                            "nldas_date_format": fallback_candidate["nldas_format"],
+                            "kerchunk_ref_count": len(refs.get("refs", {})),
+                            "fallback_attempt": fallback_attempts
+                        }
+                        break
+                        
+                except Exception as fallback_error:
+                    logging.warning(f"Fallback {fallback_attempts} failed: {fallback_error}")
+                    continue
+            else:
+                # All fallbacks failed
+                raise Exception(f"All fallback attempts failed. Original error: {file_error}")
+        else:
+            # Original file loaded successfully
             debug = {
                 "kerchunk_container": KERCHUNK_CONTAINER,
-                "kerchunk_blob_used": closest_path,
+                "kerchunk_blob_used": expected_path,
                 "kerchunk_is_combined": False,
                 "requested_date": str(dt.date()),
-                "actual_date": str(closest["date"].date()),
-                "days_difference": days_diff,
-                "nldas_date_format": closest["nldas_format"],
+                "nldas_date_format": nldas_date,
                 "kerchunk_ref_count": len(refs.get("refs", {})),
+                "file_size_bytes": file_size,
             }
-            
+        
+        # Create mapper and open dataset
+        try:
             mapper = fsspec.get_mapper(
                 "reference://",
                 fo=refs,
@@ -336,8 +345,16 @@ def load_specific_date_kerchunk(account_name: str, account_key: str, year: int, 
             ds = xr.open_dataset(mapper, engine="zarr", backend_kwargs={"consolidated": False})
             return ds, debug
             
+        except Exception as mapper_error:
+            logging.error(f"Error creating mapper or opening dataset: {mapper_error}")
+            raise Exception(f"Failed to open dataset: {str(mapper_error)}")
+            
     except Exception as e:
-        raise Exception(f"Failed to load kerchunk data for {dt.date()}: {str(e)}")
+        # Enhanced error message with available dates
+        available_dates_list = [d['date'].strftime('%Y-%m-%d') for d in available_dates[:5]] if available_dates else ["None"]
+        error_msg = f"Failed to load kerchunk data for {dt.date()}: {str(e)}. Available dates: {available_dates_list}"
+        logging.error(error_msg)
+        raise Exception(error_msg)
 
 def save_plot_to_blob_simple(figure, filename, account_key):
     """
@@ -392,6 +409,16 @@ def save_plot_to_blob_simple(figure, filename, account_key):
     except Exception as e:
         raise Exception(f"Failed to save to blob storage: {str(e)}")
 
+# Add a mapping for descriptive variable labels
+VARIABLE_LABELS = {
+    "Tair": "Temperature (K)",
+    "Rainf": "Accumulated Precipitation (mm)",
+    "Qair": "Specific Humidity (kg/kg)",
+    "PSurf": "Surface Pressure (Pa)",
+    "LWdown": "Longwave Radiation (W/m²)",
+    "SWdown": "Shortwave Radiation (W/m²)"
+}
+
 def create_weather_map_with_blob_storage(ds, variable, region_name, lat_min, lat_max, lon_min, lon_max, year, month, day=None):
     """
     Create weather map and save to blob storage - returns URL
@@ -411,18 +438,21 @@ def create_weather_map_with_blob_storage(ds, variable, region_name, lat_min, lat
         
         # Create plot
         fig, ax = plt.subplots(figsize=(12, 8))
-        im = data.plot(ax=ax, cmap="viridis")
+        im = data.plot(ax=ax, cmap="viridis", add_colorbar=False)
         
-        # Get variable info
-        units = data.attrs.get('units', 'unknown')
-        long_name = data.attrs.get('long_name', variable)
+        # Get descriptive label for the variable
+        variable_label = VARIABLE_LABELS.get(variable, variable)  # Fallback to raw name if not found
+        
+        # Add color bar with descriptive label
+        cbar = fig.colorbar(im, ax=ax, orientation="vertical")
+        cbar.set_label(variable_label, fontsize=12)
         
         # Format date and filename
         date_str = f"{year}-{month:02d}"
         if day:
             date_str += f"-{day:02d}"
         
-        plt.title(f'{region_name} {long_name}\n{date_str}', fontsize=14, fontweight='bold')
+        plt.title(f'{region_name} {variable_label}\n{date_str}', fontsize=14, fontweight='bold')
         plt.xlabel('Longitude')
         plt.ylabel('Latitude')
         
@@ -442,7 +472,7 @@ def create_weather_map_with_blob_storage(ds, variable, region_name, lat_min, lat
             "format": "png",
             "blob_url": blob_url,
             "filename": filename,
-            "description": f"Weather map for {long_name} - {date_str}",
+            "description": f"Weather map for {variable_label} - {date_str}",
             "note": "Image saved to blob storage and accessible via URL"
         }
         
@@ -562,6 +592,16 @@ def handle_weather_function_call(args: dict):
         
         # Add minimal debug info
         result["debug"] = debug_info
+        result["debug"] = debug_info
+        
+        return result
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Processing failed: {str(e)}",
+            "debug": debug_info
+        }
         
         return result
 

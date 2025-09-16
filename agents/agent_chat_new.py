@@ -70,7 +70,7 @@ def handle_chat_request(data):
         - create_azure_map_html(data_url, variable, center) - creates interactive Azure Maps
         - find_available_kerchunk_files(ACCOUNT_NAME, account_key) - lists available dates
         - NLDAS-3 variables: 'Tair' (temperature), 'Rainf' (precipitation), 'Qair' (humidity)
-        - Available dates: January 1-22, 2023
+        - Available dates: January 1-31, 2023
 
         For static visualizations (matplotlib):
         - Create figures: fig, ax = plt.subplots(figsize=(12, 8))

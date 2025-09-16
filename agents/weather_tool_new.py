@@ -393,9 +393,7 @@ def save_plot_to_blob_simple(figure, filename, account_key):
         raise Exception(f"Failed to save to blob storage: {str(e)}")
 
 def create_weather_map_with_blob_storage(ds, variable, region_name, lat_min, lat_max, lon_min, lon_max, year, month, day=None):
-    """
-    Create weather map and save to blob storage - returns URL
-    """
+    """Create weather map with safe title generation"""
     fig = None
     try:
         # Set matplotlib backend
@@ -409,28 +407,47 @@ def create_weather_map_with_blob_storage(ds, variable, region_name, lat_min, lat
         
         logging.info(f"Data shape: {data.shape}")
         
-        # Create plot
+        # Create plot with proper labels
         fig, ax = plt.subplots(figsize=(12, 8))
-        im = data.plot(ax=ax, cmap="viridis")
         
-        # Get variable info
-        units = data.attrs.get('units', 'unknown')
-        long_name = data.attrs.get('long_name', variable)
+        # Choose appropriate colormap based on variable
+        if variable == 'Tair':
+            cmap = 'RdYlBu_r'  # Blue-Red for temperature
+        elif variable in ['Rainf']:
+            cmap = 'Blues'     # Blues for precipitation
+        elif variable in ['LWdown', 'SWdown']:
+            cmap = 'plasma'    # Plasma for radiation
+        else:
+            cmap = 'viridis'   # Default
+            
+        im = data.plot(ax=ax, cmap=cmap)
         
-        # Format date and filename
+        # Get proper variable label - SAFE VERSION
+        variable_label = VARIABLE_LABELS.get(variable, variable)
+        
+        # Format date
         date_str = f"{year}-{month:02d}"
         if day:
             date_str += f"-{day:02d}"
         
-        plt.title(f'{region_name} {long_name}\n{date_str}', fontsize=14, fontweight='bold')
+        # CREATE SAFE TITLE - This is the key fix
+        title_text = f"{region_name} - {variable_label}\n{date_str}"
+        
+        # Use the title safely
+        plt.title(title_text, fontsize=14, fontweight='bold')
         plt.xlabel('Longitude')
         plt.ylabel('Latitude')
         
-        # Create filename
+        # Set colorbar label safely
+        if hasattr(im, 'colorbar') and im.colorbar:
+            im.colorbar.set_label(variable_label)
+        
+        # Create safe filename
         filename = f"{region_name}_{variable}_{year}_{month:02d}"
         if day:
             filename += f"_{day:02d}"
         filename += "_map.png"
+        filename = filename.replace(" ", "_")  # Remove spaces
         
         # Save to blob storage
         account_key = get_account_key()
@@ -442,7 +459,8 @@ def create_weather_map_with_blob_storage(ds, variable, region_name, lat_min, lat
             "format": "png",
             "blob_url": blob_url,
             "filename": filename,
-            "description": f"Weather map for {long_name} - {date_str}",
+            "description": f"Weather map for {variable_label} - {date_str}",
+            "variable_label": variable_label,
             "note": "Image saved to blob storage and accessible via URL"
         }
         

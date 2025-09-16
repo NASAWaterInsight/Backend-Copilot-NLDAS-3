@@ -35,8 +35,18 @@ def execute_custom_code(args: dict):
                 VARIABLE_MAPPING
             )
             
-            # Get actual account key
-            account_key = get_account_key()
+            # Get actual account key with retry logic
+            max_retries = 3
+            account_key = None
+            for attempt in range(max_retries):
+                try:
+                    account_key = get_account_key()
+                    break
+                except Exception as key_error:
+                    logging.warning(f"Account key retrieval attempt {attempt + 1} failed: {key_error}")
+                    if attempt == max_retries - 1:
+                        raise Exception(f"Failed to get account key after {max_retries} attempts: {key_error}")
+                    time.sleep(1)
             
             # Add all weather functions to execution environment
             exec_globals.update({

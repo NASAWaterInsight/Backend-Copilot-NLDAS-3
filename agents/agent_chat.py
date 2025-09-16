@@ -56,52 +56,62 @@ def handle_chat_request(data):
         thread = project_client.agents.threads.create()
         logging.info(f"Created thread: {thread.id}")
         
-        # Enhanced query for better code generation
-        # Update enhanced_query around line 65:
-
-        # Update the enhanced_query around line 65:
-
         enhanced_query = f"""Use execute_custom_code to write Python code for: {user_query}
 
-        Available functions and data:
-        - load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day) - loads NLDAS-3 data
-        - save_plot_to_blob_simple(figure, filename, account_key) - saves plots and RETURNS the viewable URL
-        - find_available_kerchunk_files(ACCOUNT_NAME, account_key) - lists available dates
-        - NLDAS-3 variables: 'Tair' (temperature), 'Rainf' (precipitation), 'Qair' (humidity)
-        - Find the coordinates of the region in the request lat and lon
-        - Available dates: January 1-22, 2023
+IMPORTANT: You must call the execute_custom_code function with proper JSON format:
+{{
+  "python_code": "your python code here",
+  "user_request": "{user_query}"
+}}
 
-        For visualizations/maps:
-        - Create matplotlib figures with fig, ax = plt.subplots(figsize=(12, 8))
-        - Use appropriate colormaps for different variables:
-        * Temperature ('Tair'): cmap='RdYlBu_r' (red=hot, blue=cold)
-        * Precipitation ('Rainf'): cmap='Blues' (light=dry, dark=wet)
-        * Humidity ('Qair'): cmap='BuGn' (light=dry, dark=humid)
-        - Use xarray plotting: data.plot(ax=ax, cmap=colormap, add_colorbar=True)
-        - Add proper titles: ax.set_title('Your Title')
-        - IMPORTANT: Always capture the URL like this:
-        url = save_plot_to_blob_simple(fig, 'filename.png', account_key)
-        - Set result = url (so users can click to view the image)
+Available functions and data:
+- load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day) - loads NLDAS-3 data
+- save_plot_to_blob_simple(figure, filename, account_key) - saves plots and RETURNS the viewable URL
+- find_available_kerchunk_files(ACCOUNT_NAME, account_key) - lists available dates
+- NLDAS-3 variables: 'Tair' (temperature), 'Rainf' (precipitation), 'Qair' (humidity)
+- Available dates: January 1-22, 2023
 
-        Example plotting code:
-        fig, ax = plt.subplots(figsize=(12, 8))
-        # Choose colormap based on variable
-        if 'Tair' in variable_name:
-            colormap = 'RdYlBu_r'  # Temperature: Red-Yellow-Blue reversed
-        elif 'Rainf' in variable_name:
-            colormap = 'Blues'     # Precipitation: Blues
-        elif 'Qair' in variable_name:
-            colormap = 'BuGn'      # Humidity: Blue-Green
-        else:
-            colormap = 'viridis'   # Default scientific colormap
+CRITICAL PLOTTING TEMPLATE - Use this EXACT structure for ALL visualizations:
 
-        data.plot(ax=ax, cmap=colormap, add_colorbar=True)
-        ax.set_title('Your Title')
+Python code example for your function call:
+```
+import builtins
 
-        For calculations: Set result = your_calculated_number
-        For visualizations: Set result = the_blob_url_from_save_function
+# Load and process data
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 1)
+data = ds['Rainf'].sel(lat=builtins.slice(lat1, lat2), lon=builtins.slice(lon1, lon2))
 
-        Always set result = your_result_value at the end."""
+# For accumulated precipitation, sum over time
+data = data.sum(dim='time')  # or data.isel(time=0) for instantaneous
+
+# Create plot using pcolormesh (SAFEST method)
+fig, ax = plt.subplots(figsize=(12, 8))
+im = ax.pcolormesh(data.lon, data.lat, data.values, cmap='Blues', shading='auto')
+
+# ALWAYS create colorbar manually with descriptive label
+cbar = fig.colorbar(im, ax=ax, orientation='vertical')
+cbar.set_label('Your Descriptive Label (with units)', fontsize=12)
+
+# Set titles and labels
+ax.set_title('Your Contextual Title Based on User Query')
+ax.set_xlabel('Longitude')
+ax.set_ylabel('Latitude')
+
+# Save and return URL
+url = save_plot_to_blob_simple(fig, 'descriptive_filename.png', account_key)
+ds.close()
+result = url
+```
+
+KEY RULES:
+1. NEVER use data.plot() - use ax.pcolormesh() instead
+2. ALWAYS use: im = ax.pcolormesh(data.lon, data.lat, data.values, cmap='colormap', shading='auto')
+3. For accumulated/daily precipitation: data = data.sum(dim='time')
+4. For instantaneous values: use data.isel(time=0) 
+5. ALWAYS create manual colorbar: cbar = fig.colorbar(im, ax=ax)
+6. Choose appropriate labels based on user's query context
+
+You must call execute_custom_code function with proper JSON format containing the python_code and user_request fields."""
         
         message = project_client.agents.messages.create(
             thread_id=thread.id,
@@ -118,7 +128,7 @@ def handle_chat_request(data):
         logging.info(f"Started run: {run.id}")
         
         # Execution loop with better timeout handling
-        max_iterations = 8  # Reduced from 10
+        max_iterations = 8
         iteration = 0
         analysis_data = None
         custom_code_executed = False
@@ -138,12 +148,43 @@ def handle_chat_request(data):
                     
                     if func_name == "execute_custom_code":
                         if custom_code_executed:
-                            # Skip duplicate calls
                             logging.info("Custom code already executed, skipping")
                             continue
                         
                         try:
-                            function_args = json.loads(tool_call.function.arguments)
+                            # Enhanced argument parsing with validation
+                            raw_arguments = tool_call.function.arguments
+                            logging.info(f"Raw function arguments: {raw_arguments[:200] if raw_arguments else 'EMPTY'}")
+                            
+                            if not raw_arguments or not raw_arguments.strip():
+                                raise ValueError("Function arguments are empty")
+                            
+                            # Check if raw arguments contain code blocks that need cleaning
+                            if raw_arguments.startswith('```python'):
+                                # Extract code from markdown code blocks
+                                lines = raw_arguments.split('\n')
+                                code_lines = []
+                                in_code_block = False
+                                
+                                for line in lines:
+                                    if line.strip().startswith('```python'):
+                                        in_code_block = True
+                                        continue
+                                    elif line.strip() == '```' and in_code_block:
+                                        break
+                                    elif in_code_block:
+                                        code_lines.append(line)
+                                
+                                python_code = '\n'.join(code_lines)
+                                function_args = {
+                                    "python_code": python_code,
+                                    "user_request": user_query
+                                }
+                                logging.info("Converted markdown code block to proper function arguments")
+                            else:
+                                # Try to parse as JSON
+                                function_args = json.loads(raw_arguments)
+                            
                             logging.info(f"Executing: {function_args.get('user_request', 'Unknown')}")
                             
                             # Execute the code
@@ -195,6 +236,47 @@ def handle_chat_request(data):
                                     })
                                 })
                             
+                        except json.JSONDecodeError as je:
+                            logging.error(f"Failed to parse function arguments: {je}")
+                            logging.error(f"Raw arguments: {raw_arguments}")
+                            
+                            # Try to handle raw Python code
+                            if raw_arguments and not raw_arguments.startswith('{'):
+                                logging.info("Attempting to handle raw Python code")
+                                function_args = {
+                                    "python_code": raw_arguments,
+                                    "user_request": user_query
+                                }
+                                try:
+                                    analysis_result = execute_custom_code(function_args)
+                                    analysis_data = analysis_result
+                                    custom_code_executed = True
+                                    
+                                    if analysis_result.get("status") == "success":
+                                        result_value = analysis_result.get("result", "No result")
+                                        final_response_content = f"Analysis completed. Result: {result_value}"
+                                        tool_outputs.append({
+                                            "tool_call_id": tool_call.id,
+                                            "output": json.dumps({
+                                                "status": "success",
+                                                "completed": True
+                                            })
+                                        })
+                                        logging.info("Raw code execution successful")
+                                        break
+                                except Exception as exec_error:
+                                    logging.error(f"Raw code execution failed: {exec_error}")
+                                    final_response_content = f"Code execution failed: {str(exec_error)}"
+                            else:
+                                final_response_content = f"Function argument parsing failed: {str(je)}"
+                            
+                            tool_outputs.append({
+                                "tool_call_id": tool_call.id,
+                                "output": json.dumps({
+                                    "status": "error",
+                                    "error": f"Argument parsing failed: {str(je)}"
+                                })
+                            })
                         except Exception as e:
                             logging.error(f"Execution error: {e}")
                             final_response_content = f"Code execution failed: {str(e)}"

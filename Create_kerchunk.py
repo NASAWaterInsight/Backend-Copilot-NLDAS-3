@@ -21,7 +21,7 @@ secret_name = "blob-storage"
 account_name = "ainldas34950184597"
 
 # Source data pattern (container/path)
-default_blob_glob = "nldas-3-forcing/NLDAS_FOR0010_H.A202301*.nc"
+default_blob_glob = "nldas-3-forcing/NLDAS_FOR0010_H.A202302*.nc"
 
 # Destination containers
 kerchunk_container = "kerchunk"
@@ -98,6 +98,15 @@ def write_json_blob(fs_abfs, blob_path: str, obj: dict, overwrite: bool):
         json.dump(obj, f)
     return True
 
+def load_existing_json(fs_abfs, blob_path: str) -> dict:
+    """Load existing kerchunk JSON from blob storage"""
+    try:
+        with fs_abfs.open(blob_path, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Warning: Could not load existing JSON {blob_path}: {e}")
+        return None
+
 def combine_refs(individual_refs: List[dict]) -> dict:
     mzz = MultiZarrToZarr(
         individual_refs,
@@ -106,20 +115,6 @@ def combine_refs(individual_refs: List[dict]) -> dict:
         concat_dims=["time"]
     )
     return mzz.translate()
-
-def setup_containers(account_key: str):
-    """
-    Setup both kerchunk and visualizations containers
-    """
-    print("Setting up required containers...")
-    
-    # Create kerchunk container (private)
-    ensure_container(account_key, kerchunk_container, public_access=False)
-    
-    # Create visualizations container (public blob access)
-    ensure_container(account_key, visualizations_container, public_access=True)
-    
-    print("Container setup complete!")
 
 def main():
     parser = argparse.ArgumentParser(description="Create kerchunk JSONs and setup containers.")
@@ -149,43 +144,85 @@ def main():
         return
     if args.limit:
         urls = urls[:args.limit]
-    print(f"Processing {len(urls)} NetCDF files")
+    print(f"Found {len(urls)} NetCDF files")
 
-    written = 0
-    ref_objects = []
+    # NEW: Pre-check for existing kerchunk files
+    files_to_process = []
+    existing_refs = []
+    skipped_count = 0
+    
     for i, url in enumerate(urls, 1):
         blob_name = f"kerchunk_{Path(url).name.replace('.nc', '.json')}"
         dest_path = f"{kerchunk_container}/{blob_name}"
+        
+        # Check if kerchunk JSON already exists (unless overwrite is True)
+        if fs_dest.exists(dest_path) and not args.overwrite:
+            print(f"[{i}/{len(urls)}] SKIP (JSON exists): {Path(url).name} -> {blob_name}")
+            skipped_count += 1
+            
+            # Load existing JSON for combined index
+            existing_json = load_existing_json(fs_dest, dest_path)
+            if existing_json:
+                existing_refs.append(existing_json)
+        else:
+            # Add to processing queue
+            files_to_process.append((url, dest_path, blob_name, i))
+    
+    print(f"\nProcessing plan:")
+    print(f"  - Skipped (existing): {skipped_count} files")
+    print(f"  - To process: {len(files_to_process)} files")
+    print(f"  - For combined index: {len(existing_refs)} existing + {len(files_to_process)} new")
+
+    # Process only the files that need processing
+    written = 0
+    new_refs = []
+    
+    for url, dest_path, blob_name, original_index in files_to_process:
         try:
+            print(f"[{original_index}/{len(urls)}] Processing: {Path(url).name}")
             refs = build_single(url, account_key)
+            
+            # Write the JSON
             changed = write_json_blob(fs_dest, dest_path, refs, overwrite=args.overwrite)
             if changed:
-                print(f"[{i}/{len(urls)}] Wrote {dest_path} | refs: {len(refs.get('refs', {}))}")
+                print(f"[{original_index}/{len(urls)}] Wrote {dest_path} | refs: {len(refs.get('refs', {}))}")
+                written += 1
             else:
-                print(f"[{i}/{len(urls)}] Cached {dest_path}")
-            ref_objects.append(refs)
-            written += 1
+                print(f"[{original_index}/{len(urls)}] Cached {dest_path}")
+            
+            new_refs.append(refs)
+            
         except Exception as e:
-            print(f"[{i}/{len(urls)}] FAILED {url}: {e}")
+            print(f"[{original_index}/{len(urls)}] FAILED {url}: {e}")
 
-    if not args.skip_combined and ref_objects:
+    # Combine all refs (existing + new) for combined index
+    all_refs = existing_refs + new_refs
+    
+    if not args.skip_combined and all_refs:
         combined_path = f"{kerchunk_container}/kerchunk_combined.json"
         try:
-            combined = combine_refs(ref_objects)
+            print(f"\nCreating combined index from {len(all_refs)} total files...")
+            combined = combine_refs(all_refs)
             write_json_blob(fs_dest, combined_path, combined, overwrite=True)
             print(f"Combined index saved -> {combined_path} | refs: {len(combined.get('refs', {}))}")
         except Exception as e:
-            print(f"Combine step skipped: {e}")
+            print(f"Combine step failed: {e}")
+    elif not all_refs:
+        print("\nNo files available for combined index (all skipped and no existing refs loaded)")
 
     # List summary
     try:
         entries = fs_dest.ls(kerchunk_container)
         json_blobs = [e for e in entries if e.endswith(".json")]
-        print(f"\nSummary: {written} processed, {len(json_blobs)} JSON blobs now in '{kerchunk_container}'.")
+        print(f"\nSummary:")
+        print(f"  - NetCDF files found: {len(urls)}")
+        print(f"  - Skipped (existing): {skipped_count}")
+        print(f"  - Processed this run: {written}")
+        print(f"  - Total JSON blobs in '{kerchunk_container}': {len(json_blobs)}")
         
         # Check visualizations container
         viz_entries = fs_dest.ls(visualizations_container) if fs_dest.exists(visualizations_container) else []
-        print(f"Visualizations container ready with {len(viz_entries)} files.")
+        print(f"  - Visualizations container ready with {len(viz_entries)} files")
         
     except Exception as e:
         print(f"Could not list container summary: {e}")
