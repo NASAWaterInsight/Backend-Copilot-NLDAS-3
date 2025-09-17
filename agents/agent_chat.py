@@ -56,63 +56,133 @@ def handle_chat_request(data):
         thread = project_client.agents.threads.create()
         logging.info(f"Created thread: {thread.id}")
         
-        enhanced_query = f"""Use execute_custom_code to write Python code for: {user_query}
+        # FIXED FUNCTION SIGNATURES - Clear parameter order and unpacking
+        enhanced_query = f"""Analyze this request and write Python code: {user_query}
 
-IMPORTANT: You must call the execute_custom_code function with proper JSON format:
+MANDATORY: Call execute_custom_code with:
 {{
-  "python_code": "your python code here",
+  "python_code": "your intelligent code here",
   "user_request": "{user_query}"
 }}
 
-Available functions and data:
-- load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day) - loads NLDAS-3 data
-- save_plot_to_blob_simple(figure, filename, account_key) - saves plots and RETURNS the viewable URL
-- find_available_kerchunk_files(ACCOUNT_NAME, account_key) - lists available dates
-- NLDAS-3 variables: 'Tair' (temperature), 'Rainf' (precipitation), 'Qair' (humidity)
-- Available dates: January 1-22, 2023
+CORRECT FUNCTION SIGNATURES (follow these EXACTLY):
 
-CRITICAL PLOTTING TEMPLATE - Use this EXACT structure for ALL visualizations:
+1. FOR SINGLE DAY DATA:
+   load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
+   Returns: (dataset, debug_info) - ALWAYS unpack with ds, _ = 
 
-Python code example for your function call:
-```
-import builtins
+2. FOR TIME SERIES DATA (multiple days):
+   load_multi_day_time_series(start_year, start_month, start_day, num_days, variable, lat_min, lat_max, lon_min, lon_max)
+   Returns: xarray DataArray directly - NO unpacking needed
 
-# Load and process data
-ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 1)
-data = ds['Rainf'].sel(lat=builtins.slice(lat1, lat2), lon=builtins.slice(lon1, lon2))
+3. FOR ACCUMULATED DATA (totals):
+   load_and_combine_multi_day_data(start_year, start_month, start_day, num_days, variable, lat_min, lat_max, lon_min, lon_max)
+   Returns: xarray DataArray directly - NO unpacking needed
 
-# For accumulated precipitation, sum over time
-data = data.sum(dim='time')  # or data.isel(time=0) for instantaneous
+CRITICAL EXAMPLES:
 
-# Create plot using pcolormesh (SAFEST method)
-fig, ax = plt.subplots(figsize=(12, 8))
-im = ax.pcolormesh(data.lon, data.lat, data.values, cmap='Blues', shading='auto')
+For "time series of average temperature in Iowa from Jan 1-5":
+```python
+import builtins, pandas as pd
 
-# ALWAYS create colorbar manually with descriptive label
-cbar = fig.colorbar(im, ax=ax, orientation='vertical')
-cbar.set_label('Your Descriptive Label (with units)', fontsize=12)
+# CORRECT: Parameters in right order, no unpacking
+data = load_multi_day_time_series(2023, 1, 1, 5, 'Tair', 40.4, 43.5, -96.6, -90.1)
 
-# Set titles and labels
-ax.set_title('Your Contextual Title Based on User Query')
-ax.set_xlabel('Longitude')
-ax.set_ylabel('Latitude')
+# Calculate only what user wants
+daily_avg = data.mean(dim=['lat', 'lon'])
+times = pd.to_datetime(daily_avg.time.values)
 
-# Save and return URL
-url = save_plot_to_blob_simple(fig, 'descriptive_filename.png', account_key)
-ds.close()
+fig, ax = plt.subplots(figsize=(12, 6))
+ax.plot(times, daily_avg.values, 'g-', label='Average Temperature', linewidth=2)
+ax.set_title('Iowa Average Temperature - Jan 1-5, 2023')
+ax.set_xlabel('Date')
+ax.set_ylabel('Temperature (K)')
+ax.legend()
+ax.grid(True)
+plt.xticks(rotation=45)
+plt.tight_layout()
+
+url = save_plot_to_blob_simple(fig, 'iowa_avg_temp.png', account_key)
+plt.close(fig)
 result = url
 ```
 
-KEY RULES:
-1. NEVER use data.plot() - use ax.pcolormesh() instead
-2. ALWAYS use: im = ax.pcolormesh(data.lon, data.lat, data.values, cmap='colormap', shading='auto')
-3. For accumulated/daily precipitation: data = data.sum(dim='time')
-4. For instantaneous values: use data.isel(time=0) 
-5. ALWAYS create manual colorbar: cbar = fig.colorbar(im, ax=ax)
-6. Choose appropriate labels based on user's query context
+For "time series of min, max, and average temperature":
+```python
+import builtins, pandas as pd
 
-You must call execute_custom_code function with proper JSON format containing the python_code and user_request fields."""
-        
+# CORRECT: Load data without unpacking
+data = load_multi_day_time_series(2023, 1, 1, 5, 'Tair', 40.4, 43.5, -96.6, -90.1)
+
+# Calculate all three statistics
+daily_min = data.min(dim=['lat', 'lon'])
+daily_max = data.max(dim=['lat', 'lon'])
+daily_avg = data.mean(dim=['lat', 'lon'])
+times = pd.to_datetime(daily_avg.time.values)
+
+fig, ax = plt.subplots(figsize=(14, 8))
+ax.plot(times, daily_min.values, 'b-', label='Minimum', linewidth=2)
+ax.plot(times, daily_max.values, 'r-', label='Maximum', linewidth=2)
+ax.plot(times, daily_avg.values, 'g-', label='Average', linewidth=2)
+
+ax.set_title('Iowa Temperature Time Series - Jan 1-5, 2023')
+ax.set_xlabel('Date')
+ax.set_ylabel('Temperature (K)')
+ax.legend()
+ax.grid(True)
+plt.xticks(rotation=45)
+plt.tight_layout()
+
+url = save_plot_to_blob_simple(fig, 'iowa_temp_minmaxavg.png', account_key)
+plt.close(fig)
+result = url
+```
+
+For single day map:
+```python
+import builtins
+
+# CORRECT: With unpacking for single day function
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 5)
+data = ds['Tair'].sel(lat=builtins.slice(40.4, 43.5), lon=builtins.slice(-96.6, -90.1))
+data = data.isel(time=0)
+
+fig, ax = plt.subplots(figsize=(12, 8))
+im = ax.pcolormesh(data.lon, data.lat, data.values, cmap='RdYlBu_r', shading='auto')
+cbar = fig.colorbar(im, ax=ax)
+cbar.set_label('Temperature (K)')
+ax.set_title('Iowa Temperature - January 5, 2023')
+
+url = save_plot_to_blob_simple(fig, 'iowa_temp_map.png', account_key)
+plt.close(fig)
+ds.close()  # CRITICAL: Close the dataset
+result = url
+```
+
+COORDINATES:
+- Iowa: 40.4, 43.5, -96.6, -90.1
+- Maryland: 37.9, 39.7, -79.5, -75.0
+- California: 32.5, 42.0, -124.4, -114.1
+
+TIME PARSING:
+- "first 5 days" = start_year=2023, start_month=1, start_day=1, num_days=5
+- "Jan 1-5" = start_year=2023, start_month=1, start_day=1, num_days=5
+- "January 10-15" = start_year=2023, start_month=1, start_day=10, num_days=6
+
+VARIABLE NAMES:
+- Temperature: 'Tair'
+- Precipitation: 'Rainf'
+- Humidity: 'Qair'
+
+CRITICAL RULES:
+1. load_multi_day_time_series() does NOT return a tuple - no unpacking!
+2. load_specific_date_kerchunk() DOES return a tuple - use ds, _ = 
+3. Always close single day datasets with ds.close()
+4. Parameter order matters - year, month, day, num_days, variable, coordinates
+5. Only calculate and plot what the user requests
+
+Write the code following these EXACT patterns!"""
+
         message = project_client.agents.messages.create(
             thread_id=thread.id,
             role="user",

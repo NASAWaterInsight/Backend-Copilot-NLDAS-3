@@ -9,3 +9,9 @@ adlfs
 matplotlib>=3.7.0
 azure-storage-blob>=12.19.0
 azure-functions>=1.23.0
+Pillow
+cartopy
+shapely
+pyproj
+requests
+

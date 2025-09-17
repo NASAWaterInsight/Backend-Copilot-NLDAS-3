@@ -1,6 +1,8 @@
 {
   "version": "2.0",
   "functionTimeout": "00:05:00",
+  "watchDirectories": [],
+  "watchFiles": [],
   "logging": {
     "applicationInsights": {
       "samplingSettings": {

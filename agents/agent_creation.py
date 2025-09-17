@@ -77,7 +77,7 @@ def get_dynamic_code_function_definition():
         "type": "function",
         "function": {
             "name": "execute_custom_code", 
-            "description": "Execute custom Python code for complex NLDAS-3 analysis. Use for multi-date queries, multi-location comparisons, statistical analysis, trends, time series. Available functions: load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day) returns (dataset, debug_info). Variables: 'Tair' (temperature), 'Rainf' (precipitation), 'Qair' (humidity), 'PSurf' (pressure). Use builtins.slice() for lat/lon selection. Maryland: lat 37.9-39.7, lon -79.5 to -75.0. Michigan: lat 41.7-48.2, lon -90.4 to -82.4. Data available: January 1-22, 2023 only. Always set 'result' variable with final output.",
+            "description": "Execute custom Python code for complex NLDAS-3 analysis. Use for multi-date queries, multi-location comparisons, statistical analysis, trends, time series. Available functions: load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day) returns (dataset, debug_info). Variables: 'Tair' (temperature), 'Rainf' (precipitation), 'Qair' (humidity), 'PSurf' (pressure). Use builtins.slice() for lat/lon selection. Maryland: lat 37.9-39.7, lon -79.5 to -75.0. Michigan: lat 41.7-48.2, lon -90.4 to -82.4. Data available: January 1-31, 2023 (full month). Always set 'result' variable with final output.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -158,7 +158,7 @@ text_agent = proj.agents.create_agent(
     
     "NLDAS-3 COVERAGE:\n"
     "- All of North America (Canada, USA, Mexico)\n"
-    "- Dates: January 1-22, 2023\n"
+    "- Dates: January 1-31, 2023 (FULL MONTH available)\n"
     "- Variables: Tair (temperature), Rainf (precipitation), Qair (humidity), Wind_E, Wind_N, PSurf, LWdown, SWdown\n\n"
     
     "CRITICAL PLOTTING RULES - NEVER use data.plot():\n"
@@ -173,7 +173,7 @@ text_agent = proj.agents.create_agent(
     "import builtins\n"
     "\n"
     "# Load data\n"
-    "ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 5)\n"
+    "ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 15)  # Any day 1-31\n"
     "data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max))\n"
     "data = data.isel(time=0)  # or data.sum(dim='time') for accumulated\n"
     "\n"
@@ -207,6 +207,7 @@ text_agent = proj.agents.create_agent(
     "5. ALWAYS set result = your_value in the python code\n"
     "6. ALWAYS close datasets with ds.close()\n"
     "7. Use your geographic knowledge for coordinates\n"
+    "8. FULL JANUARY available: days 1-31, 2023\n"
 ),
     tools=text_tools,
     tool_resources=text_tool_resources
