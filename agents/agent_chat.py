@@ -56,7 +56,7 @@ def handle_chat_request(data):
         thread = project_client.agents.threads.create()
         logging.info(f"Created thread: {thread.id}")
         
-        # FIXED FUNCTION SIGNATURES - Clear parameter order and unpacking
+        # CLEAR INSTRUCTIONS FOR ACCUMULATED PRECIPITATION
         enhanced_query = f"""Analyze this request and write Python code: {user_query}
 
 MANDATORY: Call execute_custom_code with:
@@ -65,123 +65,82 @@ MANDATORY: Call execute_custom_code with:
   "user_request": "{user_query}"
 }}
 
-CORRECT FUNCTION SIGNATURES (follow these EXACTLY):
+CORRECT FUNCTION USAGE:
 
-1. FOR SINGLE DAY DATA:
-   load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
-   Returns: (dataset, debug_info) - ALWAYS unpack with ds, _ = 
+1. FOR ACCUMULATED PRECIPITATION (totals over multiple days):
+   Use load_and_combine_multi_day_data() - it handles the summing automatically
+   
+2. FOR TIME SERIES (trends over multiple days):  
+   Use load_multi_day_time_series() - preserves time dimension
+   
+3. FOR SINGLE DAY:
+   Use load_specific_date_kerchunk() - needs unpacking with ds, _ =
 
-2. FOR TIME SERIES DATA (multiple days):
-   load_multi_day_time_series(start_year, start_month, start_day, num_days, variable, lat_min, lat_max, lon_min, lon_max)
-   Returns: xarray DataArray directly - NO unpacking needed
+CRITICAL EXAMPLE - ACCUMULATED PRECIPITATION:
+```python
+import builtins
 
-3. FOR ACCUMULATED DATA (totals):
-   load_and_combine_multi_day_data(start_year, start_month, start_day, num_days, variable, lat_min, lat_max, lon_min, lon_max)
-   Returns: xarray DataArray directly - NO unpacking needed
+# For accumulated precipitation, use load_and_combine_multi_day_data
+# This function AUTOMATICALLY sums over time - do NOT call .sum(dim='time') again
+total_precip = load_and_combine_multi_day_data(2023, 1, 1, 6, 'Rainf', 32.5, 42.0, -124.4, -114.1)
 
-CRITICAL EXAMPLES:
+# The data is already accumulated - just plot it
+fig, ax = plt.subplots(figsize=(12, 8))
+im = ax.pcolormesh(total_precip.lon, total_precip.lat, total_precip.values, cmap='Blues', shading='auto')
+cbar = fig.colorbar(im, ax=ax)
+cbar.set_label('Total Precipitation (kg/m²)')
+ax.set_title('California Accumulated Precipitation - First 6 Days Jan 2023')
+ax.set_xlabel('Longitude')
+ax.set_ylabel('Latitude')
 
-For "time series of average temperature in Iowa from Jan 1-5":
+url = save_plot_to_blob_simple(fig, 'california_precip_6days.png', account_key)
+plt.close(fig)
+result = url
+```
+
+TIME SERIES EXAMPLE (shows daily values over time):
 ```python
 import builtins, pandas as pd
 
-# CORRECT: Parameters in right order, no unpacking
-data = load_multi_day_time_series(2023, 1, 1, 5, 'Tair', 40.4, 43.5, -96.6, -90.1)
+# For time series, use load_multi_day_time_series
+data = load_multi_day_time_series(2023, 1, 1, 6, 'Rainf', 32.5, 42.0, -124.4, -114.1)
 
-# Calculate only what user wants
+# Calculate daily averages over the region
 daily_avg = data.mean(dim=['lat', 'lon'])
 times = pd.to_datetime(daily_avg.time.values)
 
 fig, ax = plt.subplots(figsize=(12, 6))
-ax.plot(times, daily_avg.values, 'g-', label='Average Temperature', linewidth=2)
-ax.set_title('Iowa Average Temperature - Jan 1-5, 2023')
+ax.plot(times, daily_avg.values, 'b-', linewidth=2)
+ax.set_title('California Daily Precipitation - First 6 Days Jan 2023')
 ax.set_xlabel('Date')
-ax.set_ylabel('Temperature (K)')
-ax.legend()
+ax.set_ylabel('Precipitation (kg/m²/s)')
 ax.grid(True)
 plt.xticks(rotation=45)
 plt.tight_layout()
 
-url = save_plot_to_blob_simple(fig, 'iowa_avg_temp.png', account_key)
+url = save_plot_to_blob_simple(fig, 'california_precip_timeseries.png', account_key)
 plt.close(fig)
-result = url
-```
-
-For "time series of min, max, and average temperature":
-```python
-import builtins, pandas as pd
-
-# CORRECT: Load data without unpacking
-data = load_multi_day_time_series(2023, 1, 1, 5, 'Tair', 40.4, 43.5, -96.6, -90.1)
-
-# Calculate all three statistics
-daily_min = data.min(dim=['lat', 'lon'])
-daily_max = data.max(dim=['lat', 'lon'])
-daily_avg = data.mean(dim=['lat', 'lon'])
-times = pd.to_datetime(daily_avg.time.values)
-
-fig, ax = plt.subplots(figsize=(14, 8))
-ax.plot(times, daily_min.values, 'b-', label='Minimum', linewidth=2)
-ax.plot(times, daily_max.values, 'r-', label='Maximum', linewidth=2)
-ax.plot(times, daily_avg.values, 'g-', label='Average', linewidth=2)
-
-ax.set_title('Iowa Temperature Time Series - Jan 1-5, 2023')
-ax.set_xlabel('Date')
-ax.set_ylabel('Temperature (K)')
-ax.legend()
-ax.grid(True)
-plt.xticks(rotation=45)
-plt.tight_layout()
-
-url = save_plot_to_blob_simple(fig, 'iowa_temp_minmaxavg.png', account_key)
-plt.close(fig)
-result = url
-```
-
-For single day map:
-```python
-import builtins
-
-# CORRECT: With unpacking for single day function
-ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 5)
-data = ds['Tair'].sel(lat=builtins.slice(40.4, 43.5), lon=builtins.slice(-96.6, -90.1))
-data = data.isel(time=0)
-
-fig, ax = plt.subplots(figsize=(12, 8))
-im = ax.pcolormesh(data.lon, data.lat, data.values, cmap='RdYlBu_r', shading='auto')
-cbar = fig.colorbar(im, ax=ax)
-cbar.set_label('Temperature (K)')
-ax.set_title('Iowa Temperature - January 5, 2023')
-
-url = save_plot_to_blob_simple(fig, 'iowa_temp_map.png', account_key)
-plt.close(fig)
-ds.close()  # CRITICAL: Close the dataset
 result = url
 ```
 
 COORDINATES:
+- California: 32.5, 42.0, -124.4, -114.1
 - Iowa: 40.4, 43.5, -96.6, -90.1
 - Maryland: 37.9, 39.7, -79.5, -75.0
-- California: 32.5, 42.0, -124.4, -114.1
 
-TIME PARSING:
-- "first 5 days" = start_year=2023, start_month=1, start_day=1, num_days=5
-- "Jan 1-5" = start_year=2023, start_month=1, start_day=1, num_days=5
-- "January 10-15" = start_year=2023, start_month=1, start_day=10, num_days=6
-
-VARIABLE NAMES:
+VARIABLES:
 - Temperature: 'Tair'
 - Precipitation: 'Rainf'
 - Humidity: 'Qair'
 
-CRITICAL RULES:
-1. load_multi_day_time_series() does NOT return a tuple - no unpacking!
-2. load_specific_date_kerchunk() DOES return a tuple - use ds, _ = 
-3. Always close single day datasets with ds.close()
-4. Parameter order matters - year, month, day, num_days, variable, coordinates
-5. Only calculate and plot what the user requests
+CRITICAL RULES FOR YOUR QUERY "accumulated precipitation":
+1. Use load_and_combine_multi_day_data() - it already sums over time
+2. DO NOT call .sum(dim='time') on the result - it has no time dimension
+3. The result is ready to plot directly
+4. Use 'Blues' colormap for precipitation
+5. Label as 'Total Precipitation' or 'Accumulated Precipitation'
 
-Write the code following these EXACT patterns!"""
+PARSE YOUR QUERY: "accumulated precipitation for first 6 days" = use load_and_combine_multi_day_data(2023, 1, 1, 6, 'Rainf', coordinates)"""
 
         message = project_client.agents.messages.create(
             thread_id=thread.id,
