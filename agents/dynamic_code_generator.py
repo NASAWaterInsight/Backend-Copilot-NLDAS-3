@@ -497,6 +497,19 @@ def execute_custom_code(args: dict):
             # Set matplotlib backend
             matplotlib.use('Agg')
             
+            # GLOBAL FONT SIZE CONFIGURATION - ALL TEXT AT 16PT
+            plt.rcParams.update({
+                'font.size': 16,          # Base font size
+                'axes.titlesize': 16,     # Title font size
+                'axes.labelsize': 16,     # Axis label font size
+                'xtick.labelsize': 16,    # X-axis tick label size
+                'ytick.labelsize': 16,    # Y-axis tick label size
+                'legend.fontsize': 16,    # Legend font size
+                'figure.titlesize': 16,   # Figure title size
+                'axes.titlepad': 20,      # Add padding for titles
+                'axes.labelpad': 10       # Add padding for labels
+            })
+            
             exec_globals.update({
                 'pd': pd, 'pandas': pd,
                 'np': np, 'numpy': np,
@@ -508,7 +521,7 @@ def execute_custom_code(args: dict):
                 'logging': logging  # Add logging module
             })
             
-            logging.info("Libraries loaded successfully")
+            logging.info("Libraries loaded successfully with 16pt font configuration")
             
         except Exception as e:
             logging.error(f"Failed to import libraries: {e}")
