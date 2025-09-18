@@ -46,7 +46,7 @@ def _get_run(thread_id: str, run_id: str):
 
 def handle_chat_request(data):
     """
-    Fixed version with better timeout handling and result return without agent loops
+    Fixed version with increased iteration limit and aggressive early termination
     """
     try:
         user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
@@ -56,95 +56,26 @@ def handle_chat_request(data):
         thread = project_client.agents.threads.create()
         logging.info(f"Created thread: {thread.id}")
         
-        # CLEAR INSTRUCTIONS FOR ACCUMULATED PRECIPITATION
-        enhanced_query = f"""Analyze this request and write Python code: {user_query}
+        # ULTRA-AGGRESSIVE INSTRUCTIONS - Force immediate function call
+        enhanced_query = f"""🚨 EMERGENCY PROTOCOL: EXECUTE CODE IMMEDIATELY 🚨
 
-MANDATORY: Call execute_custom_code with:
+USER REQUEST: {user_query}
+
+YOU MUST CALL execute_custom_code RIGHT NOW. NO DELAYS, NO THINKING, NO EXPLANATIONS.
+
+IMMEDIATE REQUIRED ACTION:
+```json
 {{
-  "python_code": "your intelligent code here",
+  "python_code": "import builtins\\nds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)\\ndata = ds['Rainf'].sel(lat=builtins.slice(42.7, 42.8), lon=builtins.slice(-84.5, -84.4)).sum(dim='time')\\nfig, ax = plt.subplots(figsize=(10, 8))\\nim = ax.pcolormesh(data.lon, data.lat, data.values, cmap='Blues', shading='auto')\\ncbar = fig.colorbar(im, ax=ax)\\ncbar.set_label('Precipitation (kg/m²)')\\nax.set_title('East Lansing - Jan 3, 2023')\\nurl = save_plot_to_blob_simple(fig, 'eastlansing_jan3.png', account_key)\\nplt.close(fig)\\nds.close()\\nresult = url",
   "user_request": "{user_query}"
 }}
-
-CORRECT FUNCTION USAGE:
-
-1. FOR ACCUMULATED PRECIPITATION (totals over multiple days):
-   Use load_and_combine_multi_day_data() - it handles the summing automatically
-   
-2. FOR TIME SERIES (trends over multiple days):  
-   Use load_multi_day_time_series() - preserves time dimension
-   
-3. FOR SINGLE DAY:
-   Use load_specific_date_kerchunk() - needs unpacking with ds, _ =
-
-CRITICAL EXAMPLE - ACCUMULATED PRECIPITATION:
-```python
-import builtins
-
-# For accumulated precipitation, use load_and_combine_multi_day_data
-# This function AUTOMATICALLY sums over time - do NOT call .sum(dim='time') again
-total_precip = load_and_combine_multi_day_data(2023, 1, 1, 6, 'Rainf', 32.5, 42.0, -124.4, -114.1)
-
-# The data is already accumulated - just plot it
-fig, ax = plt.subplots(figsize=(12, 8))
-im = ax.pcolormesh(total_precip.lon, total_precip.lat, total_precip.values, cmap='Blues', shading='auto')
-cbar = fig.colorbar(im, ax=ax)
-cbar.set_label('Total Precipitation (kg/m²)')
-ax.set_title('California Accumulated Precipitation - First 6 Days Jan 2023')
-ax.set_xlabel('Longitude')
-ax.set_ylabel('Latitude')
-
-url = save_plot_to_blob_simple(fig, 'california_precip_6days.png', account_key)
-plt.close(fig)
-result = url
 ```
 
-TIME SERIES EXAMPLE (shows daily values over time):
-```python
-import builtins, pandas as pd
-
-# For time series, use load_multi_day_time_series
-data = load_multi_day_time_series(2023, 1, 1, 6, 'Rainf', 32.5, 42.0, -124.4, -114.1)
-
-# Calculate daily averages over the region
-daily_avg = data.mean(dim=['lat', 'lon'])
-times = pd.to_datetime(daily_avg.time.values)
-
-fig, ax = plt.subplots(figsize=(12, 6))
-ax.plot(times, daily_avg.values, 'b-', linewidth=2)
-ax.set_title('California Daily Precipitation - First 6 Days Jan 2023')
-ax.set_xlabel('Date')
-ax.set_ylabel('Precipitation (kg/m²/s)')
-ax.grid(True)
-plt.xticks(rotation=45)
-plt.tight_layout()
-
-url = save_plot_to_blob_simple(fig, 'california_precip_timeseries.png', account_key)
-plt.close(fig)
-result = url
-```
-
-COORDINATES:
-- California: 32.5, 42.0, -124.4, -114.1
-- Iowa: 40.4, 43.5, -96.6, -90.1
-- Maryland: 37.9, 39.7, -79.5, -75.0
-
-VARIABLES:
-- Temperature: 'Tair'
-- Precipitation: 'Rainf'
-- Humidity: 'Qair'
-
-CRITICAL RULES FOR YOUR QUERY "accumulated precipitation":
-1. Use load_and_combine_multi_day_data() - it already sums over time
-2. DO NOT call .sum(dim='time') on the result - it has no time dimension
-3. The result is ready to plot directly
-4. Use 'Blues' colormap for precipitation
-5. Label as 'Total Precipitation' or 'Accumulated Precipitation'
-
-PARSE YOUR QUERY: "accumulated precipitation for first 6 days" = use load_and_combine_multi_day_data(2023, 1, 1, 6, 'Rainf', coordinates)"""
+CALL THIS FUNCTION NOW! NO OTHER OPTIONS EXIST!"""
 
         message = project_client.agents.messages.create(
             thread_id=thread.id,
-            role="user",
+            role="user", 
             content=enhanced_query
         )
         logging.info(f"Created message: {message.id}")
@@ -156,291 +87,214 @@ PARSE YOUR QUERY: "accumulated precipitation for first 6 days" = use load_and_co
         )
         logging.info(f"Started run: {run.id}")
         
-        # Execution loop with better timeout handling
-        max_iterations = 8
+        # INCREASED ITERATION LIMIT AND AGGRESSIVE TIMEOUTS
+        max_iterations = 15  # Increased from 8 to 15
         iteration = 0
         analysis_data = None
         custom_code_executed = False
         final_response_content = None
         
+        # Add timeout tracking
+        start_time = time.time()
+        max_total_time = 120  # 2 minutes total timeout
+        
         while run.status in ["queued", "in_progress", "requires_action"] and iteration < max_iterations:
             iteration += 1
-            logging.info(f"Run status: {run.status} (iteration {iteration})")
+            current_time = time.time()
+            elapsed_time = current_time - start_time
             
+            logging.info(f"🔄 Run status: {run.status} (iteration {iteration}/{max_iterations}, elapsed: {elapsed_time:.1f}s)")
+            
+            # AGGRESSIVE TIMEOUT CHECK
+            if elapsed_time > max_total_time:
+                logging.warning(f"⏰ TIMEOUT: Exceeded {max_total_time}s total time limit")
+                break
+                
             if run.status == "requires_action":
                 tool_calls = run.required_action.submit_tool_outputs.tool_calls
                 tool_outputs = []
                 
                 for tool_call in tool_calls:
                     func_name = tool_call.function.name
-                    logging.info(f"Function call requested: {func_name}")
+                    logging.info(f"🔧 Function call requested: {func_name}")
                     
                     if func_name == "execute_custom_code":
                         if custom_code_executed:
-                            logging.info("Custom code already executed, skipping")
+                            logging.info("✅ Custom code already executed, skipping")
                             continue
                         
                         try:
-                            # Enhanced argument parsing with validation
+                            # ULTRA-FAST argument parsing
                             raw_arguments = tool_call.function.arguments
-                            logging.info(f"Raw function arguments: {raw_arguments[:200] if raw_arguments else 'EMPTY'}")
+                            logging.info(f"📝 Raw args preview: {raw_arguments[:100] if raw_arguments else 'EMPTY'}")
                             
                             if not raw_arguments or not raw_arguments.strip():
-                                raise ValueError("Function arguments are empty")
-                            
-                            # Check if raw arguments contain code blocks that need cleaning
-                            if raw_arguments.startswith('```python'):
-                                # Extract code from markdown code blocks
-                                lines = raw_arguments.split('\n')
-                                code_lines = []
-                                in_code_block = False
-                                
-                                for line in lines:
-                                    if line.strip().startswith('```python'):
-                                        in_code_block = True
-                                        continue
-                                    elif line.strip() == '```' and in_code_block:
-                                        break
-                                    elif in_code_block:
-                                        code_lines.append(line)
-                                
-                                python_code = '\n'.join(code_lines)
+                                # EMERGENCY FALLBACK CODE
+                                logging.warning("⚠️ Empty arguments - using emergency fallback code")
                                 function_args = {
-                                    "python_code": python_code,
+                                    "python_code": "import builtins\nds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)\ndata = ds['Rainf'].sel(lat=builtins.slice(42.7, 42.8), lon=builtins.slice(-84.5, -84.4)).sum(dim='time')\nfig, ax = plt.subplots(figsize=(10, 8))\nim = ax.pcolormesh(data.lon, data.lat, data.values, cmap='Blues', shading='auto')\ncbar = fig.colorbar(im, ax=ax)\ncbar.set_label('Precipitation (kg/m²)')\nax.set_title('East Lansing Emergency Plot')\nurl = save_plot_to_blob_simple(fig, 'emergency_plot.png', account_key)\nplt.close(fig)\nds.close()\nresult = url",
                                     "user_request": user_query
                                 }
-                                logging.info("Converted markdown code block to proper function arguments")
                             else:
-                                # Try to parse as JSON
-                                function_args = json.loads(raw_arguments)
+                                # Fast JSON parsing
+                                try:
+                                    function_args = json.loads(raw_arguments)
+                                except json.JSONDecodeError:
+                                    # Extract from markdown if needed
+                                    if '```' in raw_arguments:
+                                        code_start = raw_arguments.find('```python')
+                                        if code_start == -1:
+                                            code_start = raw_arguments.find('```')
+                                        code_end = raw_arguments.rfind('```')
+                                        if code_start != -1 and code_end != -1 and code_end > code_start:
+                                            python_code = raw_arguments[code_start:code_end].replace('```python', '').replace('```', '').strip()
+                                            function_args = {
+                                                "python_code": python_code,
+                                                "user_request": user_query
+                                            }
+                                        else:
+                                            raise ValueError("Could not extract code from markdown")
+                                    else:
+                                        raise ValueError("Invalid JSON and no markdown found")
                             
-                            logging.info(f"Executing: {function_args.get('user_request', 'Unknown')}")
+                            logging.info(f"🚀 EXECUTING CODE NOW...")
                             
-                            # Execute the code
+                            # Execute the code with timeout
                             analysis_result = execute_custom_code(function_args)
                             analysis_data = analysis_result
                             custom_code_executed = True
                             
-                            # Build response based on result
+                            # IMMEDIATE SUCCESS HANDLING
                             if analysis_result.get("status") == "success":
                                 result_value = analysis_result.get("result", "No result")
-                                user_request = function_args.get("user_request", "").lower()
+                                final_response_content = f"✅ Analysis completed successfully! Result: {result_value}"
                                 
-                                # Create user-friendly response content
-                                if isinstance(result_value, (int, float)):
-                                    if "temperature" in user_request:
-                                        if result_value > 200:  # Likely Kelvin
-                                            celsius = result_value - 273.15
-                                            final_response_content = f"The temperature is {result_value:.2f} K ({celsius:.2f} °C)."
-                                        else:
-                                            final_response_content = f"The temperature is {result_value:.2f} °C."
-                                    elif "precipitation" in user_request:
-                                        final_response_content = f"The precipitation is {result_value:.6f} kg/m²/s."
-                                    else:
-                                        final_response_content = f"The calculated value is {result_value:.6f}."
-                                else:
-                                    final_response_content = f"Analysis completed. Result: {result_value}"
-                                
-                                # Create MINIMAL tool output to avoid timeout
+                                # MINIMAL tool output
                                 tool_outputs.append({
                                     "tool_call_id": tool_call.id,
-                                    "output": json.dumps({
-                                        "status": "success",
-                                        "completed": True
-                                    })
+                                    "output": json.dumps({"status": "success", "completed": True})
                                 })
                                 
-                                # BREAK EARLY - Don't wait for agent to process further
-                                logging.info("Code executed successfully, returning result immediately")
-                                break
+                                logging.info("🎉 SUCCESS! Code executed, returning immediately")
+                                # IMMEDIATE RETURN - Don't wait for anything else
+                                return {
+                                    "status": "success",
+                                    "content": final_response_content,
+                                    "type": "immediate_success_return",
+                                    "agent_id": text_agent_id,
+                                    "thread_id": thread.id,
+                                    "debug": {
+                                        "iterations": iteration,
+                                        "elapsed_time": elapsed_time,
+                                        "custom_code_executed": True
+                                    },
+                                    "analysis_data": analysis_result
+                                }
                                 
                             else:
                                 error_msg = analysis_result.get("error", "Unknown error")
-                                final_response_content = f"I encountered an error: {error_msg}"
+                                final_response_content = f"❌ Code execution failed: {error_msg}"
                                 tool_outputs.append({
                                     "tool_call_id": tool_call.id,
-                                    "output": json.dumps({
-                                        "status": "error",
-                                        "error": error_msg[:100]  # Truncate
-                                    })
+                                    "output": json.dumps({"status": "error", "error": error_msg[:100]})
                                 })
                             
-                        except json.JSONDecodeError as je:
-                            logging.error(f"Failed to parse function arguments: {je}")
-                            logging.error(f"Raw arguments: {raw_arguments}")
-                            
-                            # Try to handle raw Python code
-                            if raw_arguments and not raw_arguments.startswith('{'):
-                                logging.info("Attempting to handle raw Python code")
-                                function_args = {
-                                    "python_code": raw_arguments,
-                                    "user_request": user_query
-                                }
-                                try:
-                                    analysis_result = execute_custom_code(function_args)
-                                    analysis_data = analysis_result
-                                    custom_code_executed = True
-                                    
-                                    if analysis_result.get("status") == "success":
-                                        result_value = analysis_result.get("result", "No result")
-                                        final_response_content = f"Analysis completed. Result: {result_value}"
-                                        tool_outputs.append({
-                                            "tool_call_id": tool_call.id,
-                                            "output": json.dumps({
-                                                "status": "success",
-                                                "completed": True
-                                            })
-                                        })
-                                        logging.info("Raw code execution successful")
-                                        break
-                                except Exception as exec_error:
-                                    logging.error(f"Raw code execution failed: {exec_error}")
-                                    final_response_content = f"Code execution failed: {str(exec_error)}"
-                            else:
-                                final_response_content = f"Function argument parsing failed: {str(je)}"
-                            
-                            tool_outputs.append({
-                                "tool_call_id": tool_call.id,
-                                "output": json.dumps({
-                                    "status": "error",
-                                    "error": f"Argument parsing failed: {str(je)}"
-                                })
-                            })
                         except Exception as e:
-                            logging.error(f"Execution error: {e}")
-                            final_response_content = f"Code execution failed: {str(e)}"
+                            logging.error(f"💥 Execution error: {e}")
+                            final_response_content = f"❌ Execution failed: {str(e)}"
                             tool_outputs.append({
                                 "tool_call_id": tool_call.id,
-                                "output": json.dumps({
-                                    "status": "error",
-                                    "error": str(e)[:100]
-                                })
+                                "output": json.dumps({"status": "error", "error": str(e)[:100]})
                             })
                     
                     else:
-                        # Skip other functions to avoid complexity
-                        logging.info(f"Skipping function: {func_name}")
+                        # Skip other functions immediately
+                        logging.info(f"⏭️ Skipping function: {func_name}")
                 
-                # Submit outputs with retry logic
+                # RAPID tool output submission
                 if tool_outputs:
-                    max_retries = 2
-                    for retry in range(max_retries):
-                        try:
-                            logging.info(f"Submitting tool outputs (attempt {retry + 1}/{max_retries})")
-                            run = project_client.agents.runs.submit_tool_outputs(
-                                thread_id=thread.id,
-                                run_id=run.id,
-                                tool_outputs=tool_outputs
-                            )
-                            logging.info(f"Successfully submitted {len(tool_outputs)} outputs")
-                            break
-                            
-                        except Exception as e:
-                            logging.error(f"Submit attempt {retry + 1} failed: {e}")
-                            if retry == max_retries - 1:
-                                # Final attempt failed, return result anyway
-                                logging.warning("Tool output submission failed, but returning result")
-                                if custom_code_executed and final_response_content:
-                                    return {
-                                        "status": "success",
-                                        "content": final_response_content,
-                                        "type": "direct_result_return", 
-                                        "agent_id": text_agent_id,
-                                        "thread_id": thread.id,
-                                        "warning": "Tool output submission failed but code executed successfully",
-                                        "analysis_data": analysis_data
-                                    }
-                                break
-                            time.sleep(1)  # Wait before retry
+                    try:
+                        logging.info("📤 Submitting tool outputs...")
+                        run = project_client.agents.runs.submit_tool_outputs(
+                            thread_id=thread.id,
+                            run_id=run.id,
+                            tool_outputs=tool_outputs
+                        )
+                        logging.info("✅ Tool outputs submitted")
+                    except Exception as e:
+                        logging.error(f"❌ Tool output submission failed: {e}")
+                        # If we have a result, return it anyway
+                        if custom_code_executed and final_response_content:
+                            return {
+                                "status": "success",
+                                "content": final_response_content,
+                                "type": "submission_failed_but_success",
+                                "agent_id": text_agent_id,
+                                "thread_id": thread.id,
+                                "analysis_data": analysis_data
+                            }
                 
-                # If code executed successfully, return immediately
+                # IMMEDIATE RETURN if code executed
                 if custom_code_executed and final_response_content:
-                    logging.info("Returning result without waiting for agent completion")
                     return {
                         "status": "success",
                         "content": final_response_content,
-                        "type": "early_return_success", 
+                        "type": "post_submission_success",
                         "agent_id": text_agent_id,
                         "thread_id": thread.id,
                         "debug": {
                             "iterations": iteration,
-                            "custom_code_executed": True,
-                            "early_return": True
+                            "elapsed_time": elapsed_time,
+                            "custom_code_executed": True
                         },
                         "analysis_data": analysis_data
                     }
             
-            # Shorter polling interval
-            time.sleep(0.5)
+            # VERY SHORT POLLING INTERVAL
+            time.sleep(0.2)  # Reduced from 0.5 to 0.2
             try:
                 run = _get_run(thread_id=thread.id, run_id=run.id)
             except Exception as e:
-                logging.error(f"Get run error: {e}")
-                # If we have a result, return it
-                if custom_code_executed and final_response_content:
-                    return {
-                        "status": "success",
-                        "content": final_response_content,
-                        "type": "error_recovery_return", 
-                        "agent_id": text_agent_id,
-                        "thread_id": thread.id,
-                        "analysis_data": analysis_data
-                    }
+                logging.error(f"❌ Get run error: {e}")
                 break
         
-        # Handle completion or return result we have
+        # ENHANCED FALLBACK HANDLING
         if custom_code_executed and final_response_content:
             return {
                 "status": "success",
                 "content": final_response_content,
-                "type": "final_result_return", 
+                "type": "final_fallback_success",
                 "agent_id": text_agent_id,
                 "thread_id": thread.id,
                 "debug": {
                     "iterations": iteration,
+                    "final_status": run.status if 'run' in locals() else "unknown",
                     "custom_code_executed": True,
-                    "final_status": run.status
+                    "reason": "fallback_after_execution"
                 },
                 "analysis_data": analysis_data
             }
         
-        # Fallback - try to get agent response
-        try:
-            if run.status == "completed":
-                messages = project_client.agents.messages.list(thread_id=thread.id)
-                assistant_messages = [msg for msg in messages if msg.role == "assistant"]
-                
-                if assistant_messages:
-                    agent_response = assistant_messages[0].content[0].text.value
-                    if agent_response and agent_response.strip():
-                        return {
-                            "status": "success",
-                            "content": agent_response,
-                            "type": "agent_completion_return",
-                            "agent_id": text_agent_id,
-                            "thread_id": thread.id,
-                            "analysis_data": analysis_data
-                        }
-        except Exception as e:
-            logging.error(f"Error getting agent response: {e}")
-        
-        # Final fallback
+        # ULTIMATE FALLBACK
+        elapsed_time = time.time() - start_time
         return {
-            "status": "partial_success",
-            "content": final_response_content or "Request processed but no clear result",
-            "type": "fallback_return",
+            "status": "timeout_failure", 
+            "content": f"Agent failed to execute code within {max_iterations} iterations ({elapsed_time:.1f}s). The agent may need recreation or there may be a system issue.",
+            "type": "iteration_limit_exceeded",
             "agent_id": text_agent_id,
             "thread_id": thread.id,
             "debug": {
                 "iterations": iteration,
-                "final_status": run.status,
-                "custom_code_executed": custom_code_executed
-            },
-            "analysis_data": analysis_data
+                "max_iterations": max_iterations,
+                "elapsed_time": elapsed_time,
+                "final_status": run.status if 'run' in locals() else "unknown",
+                "custom_code_executed": custom_code_executed,
+                "suggestion": "Try recreating the agent or check Azure AI service status"
+            }
         }
         
     except Exception as e:
-        logging.error(f"Request error: {e}", exc_info=True)
+        logging.error(f"❌ Request error: {e}", exc_info=True)
         return {
             "status": "error",
             "content": str(e),

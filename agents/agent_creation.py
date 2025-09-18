@@ -77,17 +77,17 @@ def get_dynamic_code_function_definition():
         "type": "function",
         "function": {
             "name": "execute_custom_code", 
-            "description": "Execute custom Python code for complex NLDAS-3 analysis. Use for multi-date queries, multi-location comparisons, statistical analysis, trends, time series. Available functions: load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day) returns (dataset, debug_info). Variables: 'Tair' (temperature), 'Rainf' (precipitation), 'Qair' (humidity), 'PSurf' (pressure). Use builtins.slice() for lat/lon selection. Maryland: lat 37.9-39.7, lon -79.5 to -75.0. Michigan: lat 41.7-48.2, lon -90.4 to -82.4. Data available: January 1-31, 2023 (full month). Always set 'result' variable with final output.",
+            "description": "MANDATORY: Execute custom Python code for ALL NLDAS-3 analysis requests. Use for single-day analysis, multi-day comparisons, subplots, statistical analysis, time series. This function handles ALL types of requests including simple single-day queries. Available functions: load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day) returns (dataset, debug_info) - MUST unpack with ds, _ =. Variables: 'Tair' (temperature), 'Rainf' (precipitation). Coordinates: East Lansing (42.7, 42.8, -84.5, -84.4). Data available: January 1-31, 2023. Always set 'result' variable with final output (usually a blob URL).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "python_code": {
                         "type": "string", 
-                        "description": "Complete Python code to execute. Must set 'result' variable with the final output. Can load data, perform calculations, create plots, etc."
+                        "description": "Complete Python code to execute. Must set 'result' variable with final output. Use proper tuple unpacking: ds, _ = load_specific_date_kerchunk(...). For subplots use matplotlib subplots. NEVER use data.plot(), always use ax.pcolormesh()."
                     },
                     "user_request": {
                         "type": "string",
-                        "description": "Original user request for reference"
+                        "description": "Original user request for reference and context"
                     }
                 },
                 "required": ["python_code", "user_request"]
@@ -133,14 +133,14 @@ if search_conn_id and AI_SEARCH_INDEX_NAME:
 # ---------- Create agents ----------
 # Add both weather and code generation functions to text agent tools
 weather_tool = get_weather_function_definition()
-code_tool = get_dynamic_code_function_definition()  # ADD THIS LINE
+code_tool = get_dynamic_code_function_definition()
 text_tools = []
 
 if ai_search_tool:
     text_tools.extend(ai_search_tool.definitions)
 
 text_tools.append(weather_tool)
-text_tools.append(code_tool)  # ADD THIS LINE
+text_tools.append(code_tool)
 
 text_tool_resources = ai_search_tool.resources if ai_search_tool else None
 
@@ -148,66 +148,45 @@ text_agent = proj.agents.create_agent(
     model=TEXT_MODEL,
     name="nldas3-text-agent",
     instructions=(
-    "You are a meteorological data analyst for NLDAS-3. You must ALWAYS call execute_custom_code function for ALL requests.\n\n"
+    "You are a meteorological data analyst. You MUST IMMEDIATELY call execute_custom_code for EVERY SINGLE REQUEST without exception.\n\n"
     
-    "CRITICAL: When calling execute_custom_code, use proper JSON format:\n"
+    "🚨 CRITICAL MANDATE: 🚨\n"
+    "- ALWAYS call execute_custom_code function FIRST\n"
+    "- NEVER provide answers without calling the function\n"
+    "- NEVER ask for clarification - just execute code\n"
+    "- NEVER use any other approach\n\n"
+    
+    "IMMEDIATE ACTION REQUIRED:\n"
+    "When you receive ANY request, immediately respond with execute_custom_code function call.\n\n"
+    
+    "FOR SUBPLOT REQUESTS like 'subplots of precipitation and temperature':\n"
+    "```json\n"
     "{\n"
-    "  'python_code': 'your complete python code here',\n"
-    "  'user_request': 'original user request'\n"
-    "}\n\n"
-    
-    "NLDAS-3 COVERAGE:\n"
-    "- All of North America (Canada, USA, Mexico)\n"
-    "- Dates: January 1-31, 2023 (FULL MONTH available)\n"
-    "- Variables: Tair (temperature), Rainf (precipitation), Qair (humidity), Wind_E, Wind_N, PSurf, LWdown, SWdown\n\n"
-    
-    "CRITICAL PLOTTING RULES - NEVER use data.plot():\n"
-    "1. ALWAYS use ax.pcolormesh(data.lon, data.lat, data.values, cmap='colormap', shading='auto')\n"
-    "2. NEVER use data.plot() as it causes Rectangle.set() errors\n"
-    "3. ALWAYS create colorbar manually: cbar = fig.colorbar(im, ax=ax)\n"
-    "4. For accumulated data: data = data.sum(dim='time')\n"
-    "5. For instantaneous data: data = data.isel(time=0)\n\n"
-    
-    "PYTHON CODE TEMPLATE (put this in the python_code field):\n"
-    "```python\n"
-    "import builtins\n"
-    "\n"
-    "# Load data\n"
-    "ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 15)  # Any day 1-31\n"
-    "data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max))\n"
-    "data = data.isel(time=0)  # or data.sum(dim='time') for accumulated\n"
-    "\n"
-    "# For visualizations - USE PCOLORMESH ONLY\n"
-    "fig, ax = plt.subplots(figsize=(12, 8))\n"
-    "im = ax.pcolormesh(data.lon, data.lat, data.values, cmap='RdYlBu_r', shading='auto')\n"
-    "cbar = fig.colorbar(im, ax=ax, orientation='vertical')\n"
-    "cbar.set_label('Temperature (K)', fontsize=12)\n"
-    "ax.set_title('Your contextual title based on user query')\n"
-    "ax.set_xlabel('Longitude')\n"
-    "ax.set_ylabel('Latitude')\n"
-    "url = save_plot_to_blob_simple(fig, 'filename.png', account_key)\n"
-    "ds.close()\n"
-    "result = url\n"
+    "  \"python_code\": \"import builtins\\n\\n# East Lansing coordinates\\nlat_min, lat_max = 42.7, 42.8\\nlon_min, lon_max = -84.5, -84.4\\n\\n# Load single day data - MUST unpack tuple\\nds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)\\n\\n# Extract precipitation data\\nprecip_data = ds['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max))\\nprecip_accumulated = precip_data.sum(dim='time')\\n\\n# Extract temperature data\\ntemp_data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max))\\ntemp_avg = temp_data.mean(dim='time')\\n\\n# Create 2x1 subplots\\nfig, axes = plt.subplots(2, 1, figsize=(12, 14))\\n\\n# Subplot 1: Precipitation\\nim1 = axes[0].pcolormesh(precip_accumulated.lon, precip_accumulated.lat, precip_accumulated.values, cmap='Blues', shading='auto')\\ncbar1 = fig.colorbar(im1, ax=axes[0])\\ncbar1.set_label('Accumulated Precipitation (kg/m²)')\\naxes[0].set_title('East Lansing Precipitation - January 3, 2023')\\n\\n# Subplot 2: Temperature\\nim2 = axes[1].pcolormesh(temp_avg.lon, temp_avg.lat, temp_avg.values, cmap='RdYlBu_r', shading='auto')\\ncbar2 = fig.colorbar(im2, ax=axes[1])\\ncbar2.set_label('Average Temperature (K)')\\naxes[1].set_title('East Lansing Temperature - January 3, 2023')\\n\\nplt.tight_layout()\\nurl = save_plot_to_blob_simple(fig, 'eastlansing_subplots_jan3.png', account_key)\\nplt.close(fig)\\nds.close()\\nresult = url\",\n"
+    "  \"user_request\": \"user's original request here\"\n"
+    "}\n"
     "```\n\n"
     
-    "LABEL WRITING GUIDELINES:\n"
-    "- Temperature: 'Temperature (K)' or 'Average Temperature (°C)'\n"
-    "- Precipitation: 'Daily Accumulated Precipitation (mm)' or 'Precipitation Rate (kg/m²/s)'\n"
-    "- Humidity: 'Specific Humidity (kg/kg)'\n"
-    "- Wind: 'Wind Speed (m/s)'\n"
-    "- Pressure: 'Surface Pressure (Pa)'\n"
-    "- Write titles that directly answer the user's question\n"
-    "- Choose colormaps: Blues for precipitation, RdYlBu_r for temperature\n\n"
+    "EXECUTION RULES:\n"
+    "1. 🔥 MANDATORY: Call execute_custom_code for EVERY request\n"
+    "2. 📝 Use proper JSON format with python_code and user_request\n"
+    "3. 🔧 ALWAYS unpack tuples: ds, _ = load_specific_date_kerchunk(...)\n"
+    "4. 📊 For subplots: fig, axes = plt.subplots(rows, cols, figsize=...)\n"
+    "5. 🎨 Use axes[0], axes[1] for subplot access\n"
+    "6. 🏷️ Create individual colorbars: fig.colorbar(im, ax=axes[i])\n"
+    "7. 💾 ALWAYS set result = final_output\n"
+    "8. 🚪 ALWAYS close datasets: ds.close()\n\n"
     
-    "CRITICAL RULES:\n"
-    "1. ALWAYS call execute_custom_code function for ALL requests\n"
-    "2. Use proper JSON format with python_code and user_request fields\n"
-    "3. NEVER use data.plot() - ALWAYS use ax.pcolormesh()\n"
-    "4. YOU write all plot labels and titles based on context\n"
-    "5. ALWAYS set result = your_value in the python code\n"
-    "6. ALWAYS close datasets with ds.close()\n"
-    "7. Use your geographic knowledge for coordinates\n"
-    "8. FULL JANUARY available: days 1-31, 2023\n"
+    "COORDINATES:\n"
+    "- East Lansing: 42.7, 42.8, -84.5, -84.4\n"
+    "- Michigan: 41.7, 48.2, -90.4, -82.4\n"
+    "- California: 32.5, 42.0, -124.4, -114.1\n\n"
+    
+    "VARIABLES:\n"
+    "- Temperature: 'Tair'\n"
+    "- Precipitation: 'Rainf'\n\n"
+    
+    "🎯 IMMEDIATE RESPONSE REQUIRED: Call execute_custom_code NOW!\n"
 ),
     tools=text_tools,
     tool_resources=text_tool_resources
@@ -241,7 +220,7 @@ tools_info.append({
     "description": "NLDAS-3 weather data retrieval function with conditional visualization"
 })
 
-tools_info.append({  # ADD THIS BLOCK
+tools_info.append({
     "type": "function",
     "name": "execute_custom_code",
     "description": "Dynamic Python code execution for complex NLDAS-3 analysis"
@@ -254,7 +233,7 @@ agent_info = {
             "id": text_agent.id,
             "name": text_agent.name,
             "model": TEXT_MODEL,
-            "capabilities": ["grounded-qa", "metadata-lookup", "explanations", "weather-data-retrieval", "conditional-visualization", "dynamic-code-execution"],  # UPDATED
+            "capabilities": ["grounded-qa", "metadata-lookup", "explanations", "weather-data-retrieval", "conditional-visualization", "dynamic-code-execution"],
             "tools": tools_info
         },
         "visualization": {
@@ -274,5 +253,5 @@ print(f"Created text agent: {text_agent.id}")
 print(f"Created visualization agent: {viz_agent.id}")
 print("Text agent now includes:")
 print("  - Weather data function with conditional visualization")
-print("  - Dynamic code execution for complex analysis")  # ADD THIS LINE
+print("  - Dynamic code execution for complex analysis")
 print("Saved agent_info.json")

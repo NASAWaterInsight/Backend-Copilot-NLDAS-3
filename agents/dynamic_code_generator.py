@@ -173,6 +173,7 @@ def execute_custom_code(args: dict):
             import matplotlib.pyplot as plt
             from datetime import datetime, timedelta
             import io
+            import time  # Add time module
             
             # Set matplotlib backend
             matplotlib.use('Agg')
@@ -183,7 +184,9 @@ def execute_custom_code(args: dict):
                 'xr': xr, 'xarray': xr,
                 'plt': plt, 'matplotlib': matplotlib,
                 'datetime': datetime, 'timedelta': timedelta,
-                'io': io
+                'io': io,
+                'time': time,  # Add time module
+                'logging': logging  # Add logging module
             })
             
             logging.info("Libraries loaded successfully")
