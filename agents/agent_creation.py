@@ -159,6 +159,24 @@ text_agent = proj.agents.create_agent(
     "IMMEDIATE ACTION REQUIRED:\n"
     "When you receive ANY request, immediately respond with execute_custom_code function call.\n\n"
     
+    "🎬 ANIMATION CAPABILITIES:\n"
+    
+    "For SINGLE VARIABLE ANIMATIONS (temperature OR precipitation):\n"
+    "```json\n"
+    "{\n"
+    "  \"python_code\": \"import builtins\\nimport matplotlib.animation as animation\\n\\n# Maryland coordinates\\nlat_min, lat_max = 37.9, 39.7\\nlon_min, lon_max = -79.5, -75.0\\n\\n# Create animation for Jan 1-3 (3 days)\\ntry:\\n    anim, fig = create_multi_day_animation(2023, 1, 1, 3, 'Tair', lat_min, lat_max, lon_min, lon_max, 'Maryland')\\n    \\n    # Save animation\\n    url = save_animation_to_blob(anim, 'maryland_temperature_jan1-3.gif', account_key)\\n    \\n    # Clean up\\n    plt.close(fig)\\n    result = url\\nexcept Exception as e:\\n    # Fallback to static plot if animation fails\\n    ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 1)\\n    data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).mean(dim='time')\\n    fig, ax = plt.subplots(figsize=(10, 8))\\n    im = ax.pcolormesh(data.lon, data.lat, data.values, cmap='RdYlBu_r', shading='auto')\\n    cbar = fig.colorbar(im, ax=ax)\\n    cbar.set_label('Temperature (K)', fontsize=16)\\n    ax.set_title('Maryland Temperature - Jan 1, 2023', fontsize=16)\\n    url = save_plot_to_blob_simple(fig, 'maryland_temp_fallback.png', account_key)\\n    plt.close(fig)\\n    ds.close()\\n    result = url\",\n"
+    "  \"user_request\": \"user's request here\"\n"
+    "}\n"
+    "```\n\n"
+    
+    "For DUAL VARIABLE ANIMATIONS (temperature AND precipitation together):\n"
+    "```json\n"
+    "{\n"
+    "  \"python_code\": \"import builtins\\nimport matplotlib.animation as animation\\n\\n# Maryland coordinates\\nlat_min, lat_max = 37.9, 39.7\\nlon_min, lon_max = -79.5, -75.0\\n\\n# Create dual animation for Jan 1 only (single day due to complexity)\\ntry:\\n    anim, fig = create_dual_variable_animation(2023, 1, 1, 1, lat_min, lat_max, lon_min, lon_max, 'Maryland')\\n    \\n    # Save animation\\n    url = save_animation_to_blob(anim, 'maryland_temp_precip_jan1.gif', account_key)\\n    \\n    # Clean up\\n    plt.close(fig)\\n    result = url\\nexcept Exception as e:\\n    # Fallback to static subplot if animation fails\\n    ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 1)\\n    \\n    temp_data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).mean(dim='time')\\n    precip_data = ds['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).sum(dim='time')\\n    \\n    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))\\n    \\n    im1 = ax1.pcolormesh(temp_data.lon, temp_data.lat, temp_data.values, cmap='RdYlBu_r', shading='auto')\\n    cbar1 = fig.colorbar(im1, ax=ax1)\\n    cbar1.set_label('Temperature (K)', fontsize=16)\\n    ax1.set_title('Maryland Temperature', fontsize=16)\\n    \\n    im2 = ax2.pcolormesh(precip_data.lon, precip_data.lat, precip_data.values, cmap='Blues', shading='auto')\\n    cbar2 = fig.colorbar(im2, ax=ax2)\\n    cbar2.set_label('Precipitation (kg/m²)', fontsize=16)\\n    ax2.set_title('Maryland Precipitation', fontsize=16)\\n    \\n    plt.tight_layout()\\n    url = save_plot_to_blob_simple(fig, 'maryland_temp_precip_static.png', account_key)\\n    plt.close(fig)\\n    ds.close()\\n    result = url\",\n"
+    "  \"user_request\": \"user's request here\"\n"
+    "}\n"
+    "```\n\n"
+    
     "FOR SUBPLOT REQUESTS like 'subplots of precipitation and temperature':\n"
     "```json\n"
     "{\n"
@@ -175,12 +193,16 @@ text_agent = proj.agents.create_agent(
     "5. 🎨 Use axes[0], axes[1] for subplot access\n"
     "6. 🏷️ Create individual colorbars: fig.colorbar(im, ax=axes[i])\n"
     "7. 💾 ALWAYS set result = final_output\n"
-    "8. 🚪 ALWAYS close datasets: ds.close()\n\n"
+    "8. 🚪 ALWAYS close datasets: ds.close()\n"
+    "9. 🎬 For animations: Use try/except with static fallbacks\n"
+    "10. 🔄 For dual variables: Use create_dual_variable_animation()\n\n"
     
     "COORDINATES:\n"
     "- East Lansing: 42.7, 42.8, -84.5, -84.4\n"
     "- Michigan: 41.7, 48.2, -90.4, -82.4\n"
-    "- California: 32.5, 42.0, -124.4, -114.1\n\n"
+    "- California: 32.5, 42.0, -124.4, -114.1\n"
+    "- Florida: 24.5, 31.0, -87.6, -80.0\n"
+    "- Maryland: 37.9, 39.7, -79.5, -75.0\n\n"
     
     "VARIABLES:\n"
     "- Temperature: 'Tair'\n"

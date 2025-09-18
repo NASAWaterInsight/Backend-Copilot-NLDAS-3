@@ -1,4 +1,4 @@
-# function_app.py - Fixed version without signal timeout (Azure Functions doesn't support signals)
+# function_app.py - Enhanced version with better import debugging
 import azure.functions as func
 import logging
 import json
@@ -8,8 +8,8 @@ import traceback
 from datetime import datetime
 import numpy as np
 
-# Configure logging first
-logging.basicConfig(level=logging.INFO)
+# Configure logging first with more detailed output
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Add the project root to PYTHONPATH
@@ -41,42 +41,81 @@ def safe_json_dumps(obj):
         # Fallback: convert problematic objects to strings
         return json.dumps({"error": f"Serialization issue: {str(e)}", "data": str(obj)})
 
-# Import your agent modules with error handling
+# ENHANCED Import debugging
+logger.info("🚀 Starting agent module import process...")
+logger.info(f"📂 Current working directory: {os.getcwd()}")
+logger.info(f"📂 File location: {__file__}")
+logger.info(f"🐍 Python version: {sys.version}")
+logger.info(f"📦 Python path entries: {len(sys.path)}")
+
+# Check if agents directory exists
+agents_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'agents')
+logger.info(f"👀 Checking agents directory: {agents_dir}")
+logger.info(f"📁 Agents directory exists: {os.path.exists(agents_dir)}")
+
+if os.path.exists(agents_dir):
+    agents_files = os.listdir(agents_dir)
+    logger.info(f"📋 Files in agents directory: {agents_files}")
+else:
+    logger.error("❌ CRITICAL: agents directory not found!")
+
+# Import your agent modules with enhanced error handling
 try:
-    import os
-    import tempfile
+    logger.info("🔄 Attempting to import agent modules...")
     
-    # Log current working directory and temp directory
-    logger.info(f"Current working directory: {os.getcwd()}")
-    logger.info(f"Temp directory: {tempfile.gettempdir()}")
-    logger.info(f"Python path: {sys.path[:3]}")  # First 3 entries only
+    # Test basic imports first
+    try:
+        import pandas as pd
+        logger.info(f"✅ pandas {pd.__version__} imported")
+    except ImportError as e:
+        logger.error(f"❌ pandas import failed: {e}")
     
-    # Fix the import issue
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        logger.info(f"✅ matplotlib {matplotlib.__version__} configured with Agg backend")
+    except ImportError as e:
+        logger.error(f"❌ matplotlib import failed: {e}")
+    
+    # Now try agent imports with specific error tracking
+    logger.info("🎯 Importing handle_chat_request...")
     from agents.agent_chat import handle_chat_request
     logger.info("✅ handle_chat_request imported successfully")
     
-    # Import other modules
+    # Import other modules with individual error handling
     try:
+        logger.info("🎯 Importing handle_visualization_request...")
         from agents.agent_visualization import handle_visualization_request
         logger.info("✅ handle_visualization_request imported successfully")
     except ImportError as viz_error:
         logger.warning(f"⚠️ Could not import visualization handler: {viz_error}")
+        handle_visualization_request = None
     
     try:
+        logger.info("🎯 Importing handle_weather_function_call...")
         from agents.weather_tool import handle_weather_function_call
         logger.info("✅ handle_weather_function_call imported successfully")
     except ImportError as weather_error:
         logger.warning(f"⚠️ Could not import weather handler: {weather_error}")
+        handle_weather_function_call = None
     
-    logger.info("✅ Core agent modules imported successfully")
+    logger.info("🎉 Core agent modules imported successfully")
     
     # Set flag for successful import
     AGENTS_IMPORTED = True
     IMPORT_ERROR_MSG = None
     
 except Exception as import_error:
-    logger.error(f"❌ CRITICAL: Failed to import agent modules: {import_error}")
-    logger.error(f"❌ Traceback: {traceback.format_exc()}")
+    logger.error(f"❌ CRITICAL: Failed to import agent modules")
+    logger.error(f"❌ Import error: {import_error}")
+    logger.error(f"❌ Import traceback: {traceback.format_exc()}")
+    
+    # Check specific import issues
+    try:
+        import sys
+        logger.error(f"❌ Sys.path: {sys.path[:3]}")  # First 3 entries
+    except:
+        pass
     
     # Set flag for failed import
     AGENTS_IMPORTED = False
@@ -85,22 +124,31 @@ except Exception as import_error:
     # Define a fallback function using the captured error message
     def handle_chat_request(data):
         return {
-            "status": "error",
-            "content": f"Agent modules not available: {IMPORT_ERROR_MSG}",
-            "error_type": "ImportError"
+            "status": "initialization_error",
+            "content": f"Agent modules failed to import: {IMPORT_ERROR_MSG}",
+            "error_type": "ImportError",
+            "debug": {
+                "import_error": IMPORT_ERROR_MSG,
+                "current_directory": os.getcwd(),
+                "agents_directory_exists": os.path.exists(agents_dir) if 'agents_dir' in locals() else False
+            }
         }
+
+logger.info(f"📊 Import status: AGENTS_IMPORTED = {AGENTS_IMPORTED}")
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 @app.route(route="multi_agent_function", auth_level=func.AuthLevel.ANONYMOUS)
 def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
     logger.info('🚀 NLDAS-3 weather analysis request received.')
+    logger.info(f'📊 Agent import status: {AGENTS_IMPORTED}')
 
     try:
         # Parse the request body with better error handling
         try:
             req_body = req.get_json()
             if not req_body:
+                logger.error("❌ No request body provided")
                 return func.HttpResponse(
                     safe_json_dumps({"error": "No request body provided"}),
                     status_code=400,
@@ -125,28 +173,41 @@ def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
 
         # Add request validation
         if not data or (not data.get("query") and not data.get("input")):
+            logger.error("❌ No query or input provided")
             return func.HttpResponse(
                 safe_json_dumps({"error": "No query or input provided"}),
                 status_code=400,
                 mimetype="application/json"
             )
 
-        # Check if agents were imported successfully
+        # Enhanced agent import checking
         if not AGENTS_IMPORTED:
+            logger.error(f"❌ Agents not imported: {IMPORT_ERROR_MSG}")
             return func.HttpResponse(
                 safe_json_dumps({
                     "error": f"Agent modules failed to import: {IMPORT_ERROR_MSG}",
                     "error_type": "ImportError",
-                    "status": "initialization_error"
+                    "status": "initialization_error",
+                    "debug": {
+                        "agents_imported": AGENTS_IMPORTED,
+                        "import_error": IMPORT_ERROR_MSG,
+                        "agents_directory": os.path.exists(agents_dir) if 'agents_dir' in locals() else "unknown"
+                    }
                 }),
                 status_code=503,
                 mimetype="application/json"
             )
 
-        # Route to generate with enhanced error handling
+        # Enhanced chat request handling
         try:
+            logger.info("🎯 Calling handle_chat_request...")
             response = handle_chat_request(data)
             logger.info(f"✅ Request processed successfully. Response type: {type(response)}")
+            
+            # Log response status for debugging
+            if isinstance(response, dict):
+                response_status = response.get("status", "unknown")
+                logger.info(f"📊 Response status: {response_status}")
             
             return func.HttpResponse(
                 safe_json_dumps({"response": response}),
@@ -162,7 +223,8 @@ def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(
                 safe_json_dumps({
                     "error": f"Chat processing failed: {str(chat_error)}",
-                    "error_type": type(chat_error).__name__
+                    "error_type": type(chat_error).__name__,
+                    "traceback": traceback.format_exc()[-500:]  # Last 500 chars
                 }),
                 status_code=500,
                 mimetype="application/json"
@@ -177,7 +239,8 @@ def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
             safe_json_dumps({
                 "error": f"System error: {str(e)}",
                 "error_type": type(e).__name__,
-                "message": "Function completed with error but did not crash"
+                "message": "Function completed with error but did not crash",
+                "traceback": traceback.format_exc()[-500:]
             }),
             status_code=500,
             mimetype="application/json"
@@ -190,8 +253,41 @@ def health_check(req: func.HttpRequest) -> func.HttpResponse:
         safe_json_dumps({
             "status": "healthy",
             "message": "NLDAS-3 function app is running",
-            "timestamp": str(datetime.utcnow())
+            "timestamp": str(datetime.utcnow()),
+            "agents_imported": AGENTS_IMPORTED,
+            "import_error": IMPORT_ERROR_MSG if not AGENTS_IMPORTED else None
         }),
+        status_code=200,
+        mimetype="application/json"
+    )
+
+# Add a debug endpoint to help diagnose import issues
+@app.route(route="debug", auth_level=func.AuthLevel.ANONYMOUS)
+def debug_info(req: func.HttpRequest) -> func.HttpResponse:
+    import os
+    
+    debug_info = {
+        "agents_imported": AGENTS_IMPORTED,
+        "import_error": IMPORT_ERROR_MSG,
+        "current_directory": os.getcwd(),
+        "file_location": __file__,
+        "python_version": sys.version,
+        "agents_directory_exists": os.path.exists(os.path.join(os.path.dirname(__file__), 'agents')),
+        "sys_path_length": len(sys.path)
+    }
+    
+    # Try to list agents directory
+    try:
+        agents_dir = os.path.join(os.path.dirname(__file__), 'agents')
+        if os.path.exists(agents_dir):
+            debug_info["agents_files"] = os.listdir(agents_dir)
+        else:
+            debug_info["agents_files"] = "Directory not found"
+    except Exception as e:
+        debug_info["agents_files"] = f"Error listing: {str(e)}"
+    
+    return func.HttpResponse(
+        safe_json_dumps(debug_info),
         status_code=200,
         mimetype="application/json"
     )
