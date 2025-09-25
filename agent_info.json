@@ -2,16 +2,15 @@
   "project_endpoint": "https://nldas-test-resource.services.ai.azure.com/api/projects/nldas-test",
   "agents": {
     "text": {
-      "id": "asst_iM1MblFtN3W0yfvcuVV8BJ3s",
-      "name": "nldas3-static-frame-animation-agent",
+      "id": "asst_5T2ozx0zuAKIbq3HviZEElCM",
+      "name": "nldas3-final-agent-with-formatted-timeseries",
       "model": "gpt-4o",
       "capabilities": [
         "direct-code-execution",
         "subplot-creation",
         "proper-colorbar-scaling",
         "map-generation",
-        "formatted-time-series",
-        "static-frame-animations"
+        "formatted-time-series"
       ],
       "tools": [
         {
@@ -23,12 +22,12 @@
         {
           "type": "function",
           "name": "execute_custom_code",
-          "description": "Execute custom Python code for NLDAS-3 analysis with static frame animation support"
+          "description": "Execute custom Python code for NLDAS-3 analysis with proper formatting"
         }
       ]
     },
     "visualization": {
-      "id": "asst_7h6Hvew9Dh5yRQYi71rAdCES",
+      "id": "asst_rPLkNpNGIyGUtAW8novV7HVt",
       "name": "nldas3-visualization-agent",
       "model": "gpt-4o",
       "capabilities": [

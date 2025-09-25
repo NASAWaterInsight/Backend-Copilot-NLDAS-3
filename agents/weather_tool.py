@@ -389,26 +389,16 @@ def _discover_kerchunk_index_for_date(account_name: str, account_key: str, blob_
     except Exception as e:
         raise Exception(f"Failed to load kerchunk file {blob_path}: {str(e)}")
 
-def save_plot_to_blob_simple(fig_or_buffer, filename: str, account_key: str):
+def save_plot_to_blob_simple(fig, filename: str, account_key: str):
     """
-    Save a matplotlib figure OR BytesIO buffer to Azure Blob Storage and return the URL
-    ENHANCED: Handle both matplotlib figures and BytesIO buffers for GIF animations
+    Save a matplotlib figure to Azure Blob Storage and return the URL
+    RESTORED: Original working version from your code
     """
     try:
-        # Check what type of object we received
-        import io
-        
-        if isinstance(fig_or_buffer, io.BytesIO):
-            # It's already a BytesIO buffer (e.g., GIF data)
-            logging.info(f"💾 Saving BytesIO buffer to blob: {filename}")
-            buffer = fig_or_buffer
-            buffer.seek(0)  # Ensure we're at the beginning
-        else:
-            # It's a matplotlib figure - convert to buffer
-            logging.info(f"💾 Converting matplotlib figure to buffer: {filename}")
-            buffer = io.BytesIO()
-            fig_or_buffer.savefig(buffer, format='png', dpi=150, bbox_inches='tight', facecolor='white')
-            buffer.seek(0)
+        # Save figure to memory buffer
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight', facecolor='white')
+        buffer.seek(0)
         
         # Upload to blob storage
         blob_service_client = BlobServiceClient(
@@ -432,7 +422,7 @@ def save_plot_to_blob_simple(fig_or_buffer, filename: str, account_key: str):
             blob=filename
         )
         
-        # Upload the data
+        # Upload the image - ORIGINAL WORKING METHOD
         blob_client.upload_blob(buffer.getvalue(), overwrite=True)
         
         # Generate a SAS URL for access (valid for 24 hours)
@@ -447,13 +437,12 @@ def save_plot_to_blob_simple(fig_or_buffer, filename: str, account_key: str):
         
         # Return the blob URL with SAS token
         blob_url = f"https://{ACCOUNT_NAME}.blob.core.windows.net/{container_name}/{filename}?{sas_token}"
-        logging.info(f"✅ Successfully saved to blob: {blob_url}")
+        logging.info(f"Image saved to: {blob_url}")
         return blob_url
         
     except Exception as e:
-        logging.error(f"❌ Failed to save to blob storage: {e}")
-        logging.error(f"❌ Object type: {type(fig_or_buffer)}")
-        raise Exception(f"Failed to save to blob storage: {str(e)}")
+        logging.error(f"Failed to save plot to blob storage: {e}")
+        raise Exception(f"Failed to save plot to blob storage: {str(e)}")
 
 def handle_weather_function_call(function_args: dict):
     """
