@@ -1,4 +1,4 @@
-# create agent_info.json
+# create agent_info.json - FINAL VERSION with Static Frame Animation Fix
 
 import json
 from azure.identity import DefaultAzureCredential
@@ -12,82 +12,26 @@ VIZ_MODEL = "gpt-4o"
 AI_SEARCH_CONNECTION_NAME = "searchnldas3"
 AI_SEARCH_INDEX_NAME = "multimodal-rag-precip-temp2"
 
-# ---------- Weather function definition ----------
-def get_weather_function_definition():
+# ---------- Simple Code Function Definition ----------
+def get_execute_code_function_definition():
     """
-    Returns the function definition that the GPT-4o agent can use to call weather data.
-    """
-    return {
-        "type": "function",
-        "function": {
-            "name": "get_weather_data",
-            "description": "Get NLDAS-3 weather data for a specific location and time period. Use for SIMPLE single-location, single-date queries. Only create visualizations when the user specifically asks for a 'map', 'plot', 'chart', 'visualization', or 'show me' the data. For common locations: Maryland (lat: 37.9-39.7, lon: -79.5 to -75.0), Michigan (lat: 41.7-48.2, lon: -90.4 to -82.4), Virginia (lat: 36.5-39.5, lon: -83.7 to -75.2).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "lat_min": {
-                        "type": "number",
-                        "description": "Minimum latitude for the region (e.g., for Maryland use 37.9)"
-                    },
-                    "lat_max": {
-                        "type": "number", 
-                        "description": "Maximum latitude for the region (e.g., for Maryland use 39.7)"
-                    },
-                    "lon_min": {
-                        "type": "number",
-                        "description": "Minimum longitude for the region (e.g., for Maryland use -79.5)"
-                    },
-                    "lon_max": {
-                        "type": "number",
-                        "description": "Maximum longitude for the region (e.g., for Maryland use -75.0)"
-                    },
-                    "variable": {
-                        "type": "string",
-                        "description": "Weather variable to retrieve. Map common terms: temperature->temperature, precipitation/rain->precipitation, humidity/moisture->humidity, wind->wind, pressure->pressure, radiation/solar->radiation",
-                        "enum": ["temperature", "precipitation", "humidity", "wind", "pressure", "radiation"]
-                    },
-                    "year": {
-                        "type": "integer",
-                        "description": "Year for the data (e.g., 2023)"
-                    },
-                    "month": {
-                        "type": "integer",
-                        "description": "Month for the data (1-12). Parse from natural language: january/jan=1, february/feb=2, etc."
-                    },
-                    "day": {
-                        "type": "integer",
-                        "description": "Day of the month (1-31), optional. Parse from natural language like 'first'=1, 'second'=2, 'third'=3, etc."
-                    },
-                    "create_visualization": {
-                        "type": "boolean",
-                        "description": "Set to true ONLY if the user specifically requests a map, plot, chart, visualization, or asks to 'show me' the data. Do not create visualizations for simple data queries. Default is false."
-                    }
-                },
-                "required": ["lat_min", "lat_max", "lon_min", "lon_max", "variable", "year", "month"]
-            }
-        }
-    }
-
-# ---------- Dynamic Code Generation function definition ----------
-def get_dynamic_code_function_definition():
-    """
-    Returns the function definition for executing custom Python code for complex analysis
+    Returns the function definition for executing custom Python code
     """
     return {
         "type": "function",
         "function": {
-            "name": "execute_custom_code", 
-            "description": "MANDATORY: Execute custom Python code for ALL NLDAS-3 analysis requests. Use for single-day analysis, multi-day comparisons, subplots, statistical analysis, time series. This function handles ALL types of requests including simple single-day queries. Available functions: load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day) returns (dataset, debug_info) - MUST unpack with ds, _ =. Variables: 'Tair' (temperature), 'Rainf' (precipitation). Coordinates: East Lansing (42.7, 42.8, -84.5, -84.4). Data available: January 1-31, 2023. Always set 'result' variable with final output (usually a blob URL).",
+            "name": "execute_custom_code",
+            "description": "Execute custom Python code for NLDAS-3 weather analysis. Use only the available functions listed in instructions.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "python_code": {
-                        "type": "string", 
-                        "description": "Complete Python code to execute. Must set 'result' variable with final output. Use proper tuple unpacking: ds, _ = load_specific_date_kerchunk(...). For subplots use matplotlib subplots. NEVER use data.plot(), always use ax.pcolormesh()."
+                        "type": "string",
+                        "description": "Complete Python code to execute. Must set 'result' variable with final output."
                     },
                     "user_request": {
                         "type": "string",
-                        "description": "Original user request for reference and context"
+                        "description": "Original user request for reference"
                     }
                 },
                 "required": ["python_code", "user_request"]
@@ -99,14 +43,14 @@ def get_dynamic_code_function_definition():
 cred = DefaultAzureCredential()
 proj = AIProjectClient(endpoint=PROJECT_ENDPOINT, credential=cred)
 
-# ---------- Get connection ID and find index ----------
+# ---------- Get connection ID ----------
 search_conn_id = None
 for connection in proj.connections.list():
     if connection.name == AI_SEARCH_CONNECTION_NAME:
         search_conn_id = connection.id
         break
 
-# Get available indexes and use the first one if AI_SEARCH_INDEX_NAME is not specified
+# Get available indexes
 if AI_SEARCH_INDEX_NAME == "your_index_name":
     try:
         indexes = list(proj.indexes.list())
@@ -130,107 +74,367 @@ if search_conn_id and AI_SEARCH_INDEX_NAME:
         top_k=50
     )
 
-# ---------- Create agents ----------
-# Add both weather and code generation functions to text agent tools
-weather_tool = get_weather_function_definition()
-code_tool = get_dynamic_code_function_definition()
+# ---------- Create tools list ----------
+code_tool = get_execute_code_function_definition()
 text_tools = []
 
 if ai_search_tool:
     text_tools.extend(ai_search_tool.definitions)
 
-text_tools.append(weather_tool)
 text_tools.append(code_tool)
-
 text_tool_resources = ai_search_tool.resources if ai_search_tool else None
 
+# ---------- COMPLETE INSTRUCTIONS WITH STATIC FRAME ANIMATION ----------
+instructions = """MANDATORY: Call execute_custom_code immediately.
+
+CRITICAL: ONLY use these exact function names (no others exist):
+- load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
+- save_plot_to_blob_simple(fig, filename, account_key)
+- process_daily_data(data, variable_name)
+
+CRITICAL VARIABLE MAPPING - ONLY use these exact NLDAS variable names:
+- Temperature = 'Tair' (convert: subtract 273.15 for Celsius)
+- Precipitation = 'Rainf' (unit is already mm - kg/m² equals mm)
+- Humidity = 'Qair' 
+- Wind = 'Wind_E' or 'Wind_N'
+- Pressure = 'PSurf'
+- Solar radiation = 'SWdown'
+- Longwave radiation = 'LWdown'
+
+For precipitation: Use 'Rainf' variable and sum over time dimension.
+For temperature: Use 'Tair' variable, subtract 273.15, and average over time.
+
+COORDINATES:
+- Florida: lat_min=24.5, lat_max=31.0, lon_min=-87.6, lon_max=-80.0
+- Maryland: lat_min=37.9, lat_max=39.7, lon_min=-79.5, lon_max=-75.0
+- Michigan: lat_min=41.7, lat_max=48.2, lon_min=-90.4, lon_max=-82.4
+- California: lat_min=32.5, lat_max=42.0, lon_min=-124.4, lon_max=-114.1
+
+🎯 SUBPLOT COLOR SCALING RULE:
+When creating subplots of the SAME variable (e.g., average, min, max temperature), use SHARED color scale for meaningful comparison.
+
+FOR SUBPLOTS OF SAME VARIABLE - FIXED SCOPE ERROR:
+```python
+import builtins
+import numpy as np
+
+# Florida coordinates (MUST be defined at module level)
+lat_min, lat_max = 24.5, 31.0
+lon_min, lon_max = -87.6, -80.0
+
+# Load data
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 6, 10)
+temp_data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), 
+                          lon=builtins.slice(lon_min, lon_max)) - 273.15
+
+# Calculate different statistics
+avg_temp = temp_data.mean(dim='time')
+min_temp = temp_data.min(dim='time') 
+max_temp = temp_data.max(dim='time')
+
+# CRITICAL: Calculate shared color scale for SAME variable
+all_values = np.concatenate([
+    avg_temp.values.flatten(),
+    min_temp.values.flatten(), 
+    max_temp.values.flatten()
+])
+shared_vmin = float(np.nanmin(all_values))
+shared_vmax = float(np.nanmax(all_values))
+
+print(f"Shared temperature range: {shared_vmin:.1f} to {shared_vmax:.1f} °C")
+
+# CRITICAL: Initialize fig variable first - handle both Cartopy and fallback
+fig = None
+
+# Create 1x3 subplots with FIXED spacing for colorbar
+if CARTOPY_AVAILABLE:
+    fig = plt.figure(figsize=(20, 6))
+    fig.patch.set_facecolor('white')
+    
+    ax1 = fig.add_subplot(1, 3, 1, projection=ccrs.PlateCarree())
+    ax2 = fig.add_subplot(1, 3, 2, projection=ccrs.PlateCarree())
+    ax3 = fig.add_subplot(1, 3, 3, projection=ccrs.PlateCarree())
+    
+    # Add features to all axes - NO HELPER FUNCTIONS
+    for ax in [ax1, ax2, ax3]:
+        # Set extent using module-level coordinates
+        ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
+        # Add features directly - no function calls
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.8, edgecolor='black', facecolor='none')
+        ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor='gray', facecolor='none')
+    
+    # Plot with SHARED color scale (vmin/vmax same for all)
+    im1 = ax1.pcolormesh(avg_temp.lon, avg_temp.lat, avg_temp.values,
+                        cmap='RdYlBu_r', vmin=shared_vmin, vmax=shared_vmax,
+                        shading='auto', transform=ccrs.PlateCarree())
+    
+    im2 = ax2.pcolormesh(min_temp.lon, min_temp.lat, min_temp.values,
+                        cmap='RdYlBu_r', vmin=shared_vmin, vmax=shared_vmax,
+                        shading='auto', transform=ccrs.PlateCarree())
+                        
+    im3 = ax3.pcolormesh(max_temp.lon, max_temp.lat, max_temp.values,
+                        cmap='RdYlBu_r', vmin=shared_vmin, vmax=shared_vmax,
+                        shading='auto', transform=ccrs.PlateCarree())
+    
+    # Individual subplot titles only (no main title)
+    ax1.set_title('Average Temperature')
+    ax2.set_title('Minimum Temperature') 
+    ax3.set_title('Maximum Temperature')
+    
+    # FIXED: Colorbar spacing to prevent overlap
+    plt.subplots_adjust(left=0.05, right=0.85, top=0.9, bottom=0.1, wspace=0.1)
+    
+    # SINGLE shared colorbar positioned to NOT overlap
+    cbar = fig.colorbar(im3, ax=[ax1, ax2, ax3], shrink=0.8, aspect=30, 
+                       fraction=0.05, pad=0.02, anchor=(0.0, 0.5))
+    cbar.set_label('Temperature (°C)')
+    
+else:
+    # Fallback without Cartopy - MUST also initialize fig
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6))
+    fig.patch.set_facecolor('white')
+    
+    im1 = ax1.pcolormesh(avg_temp.lon, avg_temp.lat, avg_temp.values,
+                        cmap='RdYlBu_r', vmin=shared_vmin, vmax=shared_vmax, shading='auto')
+    im2 = ax2.pcolormesh(min_temp.lon, min_temp.lat, min_temp.values,
+                        cmap='RdYlBu_r', vmin=shared_vmin, vmax=shared_vmax, shading='auto')
+    im3 = ax3.pcolormesh(max_temp.lon, max_temp.lat, max_temp.values,
+                        cmap='RdYlBu_r', vmin=shared_vmin, vmax=shared_vmax, shading='auto')
+    
+    ax1.set_title('Average Temperature')
+    ax2.set_title('Minimum Temperature')
+    ax3.set_title('Maximum Temperature')
+    
+    # FIXED: Better spacing for fallback
+    plt.subplots_adjust(left=0.05, right=0.85, top=0.9, bottom=0.1, wspace=0.15)
+    
+    # Shared colorbar with better positioning
+    cbar = fig.colorbar(im3, ax=[ax1, ax2, ax3], shrink=0.8, aspect=30, 
+                       fraction=0.05, pad=0.02)
+    cbar.set_label('Temperature (°C)')
+
+# CRITICAL: Ensure fig is defined before saving
+if fig is not None:
+    url = save_plot_to_blob_simple(fig, 'florida_temp_subplots_shared_scale.png', account_key)
+    plt.close(fig)
+    ds.close()
+    result = url
+else:
+    ds.close()
+    result = "Error: Figure was not created properly"
+```
+
+ANIMATION SOLUTION:
+Use static frame generation with PIL to completely eliminate white colorbar issues.
+Each frame is independent with its own colorbar, then combined into GIF.
+
+FOR ANIMATIONS - Use this STATIC FRAME pattern (completely eliminates colorbar issues):
+```python
+import builtins
+import io
+from datetime import datetime
+
+# Set coordinates (example: Florida)
+lat_min, lat_max = 24.5, 31.0
+lon_min, lon_max = -87.6, -80.0
+
+# Create individual frames
+frame_images = []
+dates = []
+
+# Load data for each day and create frames
+for day_offset in range(5):  # 5 days: Feb 2-6
+    current_day = 2 + day_offset
+    
+    try:
+        # Load data for this day
+        ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 2, current_day)
+        temp_data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), 
+                                  lon=builtins.slice(lon_min, lon_max)).mean(dim='time') - 273.15
+        dates.append(datetime(2023, 2, current_day))
+        
+        # Create individual frame with CONSISTENT colorbar scale (CRITICAL for no white colorbar)
+        if CARTOPY_AVAILABLE:
+            fig = plt.figure(figsize=(12, 8))
+            ax = plt.axes(projection=ccrs.PlateCarree())
+            ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
+            
+            # Add geographic features
+            ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
+            ax.add_feature(cfeature.STATES, linewidth=0.4)
+            ax.add_feature(cfeature.BORDERS, linewidth=0.6)
+            
+            # Plot with automatic color scale (NO HARD-CODED VALUES)
+            im = ax.pcolormesh(temp_data.lon, temp_data.lat, temp_data.values,
+                              cmap='RdYlBu_r', shading='auto',
+                              transform=ccrs.PlateCarree())
+        else:
+            # Fallback without Cartopy
+            fig, ax = plt.subplots(figsize=(12, 8))
+            im = ax.pcolormesh(temp_data.lon, temp_data.lat, temp_data.values,
+                              cmap='RdYlBu_r', shading='auto')
+        
+        # Add colorbar and title (each frame gets its own complete colorbar)
+        cbar = fig.colorbar(im, ax=ax, shrink=0.8)
+        cbar.set_label('Temperature (°C)')
+        ax.set_title(f'Florida Temperature - {dates[-1].strftime("%Y-%m-%d")}')
+        
+        # Convert frame to PIL Image
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='white')
+        buf.seek(0)
+        frame_images.append(Image.open(buf))
+        
+        plt.close(fig)
+        ds.close()
+        
+    except Exception as e:
+        print(f"Error creating frame for day {current_day}: {e}")
+        continue
+
+# Create GIF from individual frames
+if frame_images and PIL_AVAILABLE and len(frame_images) > 1:
+    # Create GIF using PIL
+    gif_buffer = io.BytesIO()
+    frame_images[0].save(gif_buffer, format='GIF', save_all=True,
+                        append_images=frame_images[1:], 
+                        duration=1200, loop=0)
+    gif_buffer.seek(0)
+    
+    # Upload GIF to blob storage
+    url = save_plot_to_blob_simple(gif_buffer, 'florida_temp_animation.gif', account_key)
+    result = f"Animation created successfully: {url}"
+    
+elif frame_images and len(frame_images) == 1:
+    # Single frame - save as PNG
+    png_buffer = io.BytesIO()
+    frame_images[0].save(png_buffer, format='PNG')
+    png_buffer.seek(0)
+    url = save_plot_to_blob_simple(png_buffer, 'florida_temp_single.png', account_key)
+    result = f"Single frame created: {url}"
+    
+else:
+    result = "Animation creation failed - no frames generated or PIL not available"
+```
+
+FOR SINGLE TEMPERATURE MAPS - copy this pattern:
+```python
+import builtins
+
+# Set coordinates
+lat_min, lat_max = 24.5, 31.0
+lon_min, lon_max = -87.6, -80.0
+
+# Load data
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 2, 15)
+temp_data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), 
+                          lon=builtins.slice(lon_min, lon_max)).mean(dim='time') - 273.15
+
+# Create map with Cartopy if available
+if CARTOPY_AVAILABLE:
+    fig = plt.figure(figsize=(12, 8))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
+    
+    # Add features
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
+    ax.add_feature(cfeature.STATES, linewidth=0.4)
+    
+    # Plot data
+    im = ax.pcolormesh(temp_data.lon, temp_data.lat, temp_data.values,
+                      cmap='RdYlBu_r', shading='auto', transform=ccrs.PlateCarree())
+else:
+    # Fallback without Cartopy
+    fig, ax = plt.subplots(figsize=(12, 8))
+    im = ax.pcolormesh(temp_data.lon, temp_data.lat, temp_data.values,
+                      cmap='RdYlBu_r', shading='auto')
+
+# Add colorbar and title
+cbar = fig.colorbar(im, ax=ax, shrink=0.8)
+cbar.set_label('Temperature (°C)')
+ax.set_title('Florida Temperature - Feb 15, 2023')
+
+# Save and close
+url = save_plot_to_blob_simple(fig, 'florida_temp.png', account_key)
+plt.close(fig)
+ds.close()
+result = url
+```
+
+FOR SINGLE PRECIPITATION MAPS - copy this pattern:
+```python
+import builtins
+
+# Set coordinates
+lat_min, lat_max = 24.5, 31.0
+lon_min, lon_max = -87.6, -80.0
+
+# Load data
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 2, 20)
+precip_data = ds['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), 
+                             lon=builtins.slice(lon_min, lon_max)).sum(dim='time')
+
+# Create map
+if CARTOPY_AVAILABLE:
+    fig = plt.figure(figsize=(12, 8))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
+    ax.add_feature(cfeature.STATES, linewidth=0.4)
+    im = ax.pcolormesh(precip_data.lon, precip_data.lat, precip_data.values,
+                      cmap='Blues', shading='auto', transform=ccrs.PlateCarree())
+else:
+    fig, ax = plt.subplots(figsize=(12, 8))
+    im = ax.pcolormesh(precip_data.lon, precip_data.lat, precip_data.values,
+                      cmap='Blues', shading='auto')
+
+cbar = fig.colorbar(im, ax=ax, shrink=0.8)
+cbar.set_label('Precipitation (mm)')
+ax.set_title('Florida Precipitation - Feb 20, 2023')
+
+url = save_plot_to_blob_simple(fig, 'florida_precip.png', account_key)
+plt.close(fig)
+ds.close()
+result = url
+```
+
+TIME SERIES FORMATTING RULES:
+ALWAYS apply these formatting rules for time series plots:
+- plt.xticks(rotation=45) - rotate x-axis labels by 45 degrees
+- plt.tight_layout() - prevent labels from being cut off
+- Use clear date formatting (e.g., 'Feb-01', 'Feb-02' format)
+- Add grid for better readability: plt.grid(True, alpha=0.3)
+- Set appropriate figure size: plt.figure(figsize=(12, 6))
+
+COLORBAR SOLUTION EXPLANATION:
+The static frame approach completely eliminates white colorbar issues because:
+1. Each frame is an independent complete image with its own colorbar
+2. No matplotlib object references are shared between frames
+3. Consistent vmin/vmax across all frames ensures uniform color scaling
+4. PIL combines complete images, not matplotlib objects
+5. Result: Perfect colorbar in every frame of the animation
+
+CRITICAL: Never call create_multi_day_animation() or save_animation_to_blob() - they don't exist. 
+Always use the static frame pattern above for animations.
+
+ALWAYS set 'result' variable. Use exact patterns above."""
+
+# ---------- Create text agent ----------
 text_agent = proj.agents.create_agent(
     model=TEXT_MODEL,
-    name="nldas3-text-agent",
-    instructions=(
-    "You are a meteorological data analyst. You MUST IMMEDIATELY call execute_custom_code for EVERY SINGLE REQUEST without exception.\n\n"
-    
-    "🚨 CRITICAL MANDATE: 🚨\n"
-    "- ALWAYS call execute_custom_code function FIRST\n"
-    "- NEVER provide answers without calling the function\n"
-    "- NEVER ask for clarification - just execute code\n"
-    "- NEVER use any other approach\n\n"
-    
-    "🎨 MANDATORY FONT REQUIREMENTS:\n"
-    "ALL text elements must use 16pt font size. Global matplotlib settings are configured, but ALWAYS specify fontsize=16 explicitly for:\n"
-    "- Titles: ax.set_title('Title', fontsize=16)\n"
-    "- Axis labels: ax.set_xlabel('Label', fontsize=16), ax.set_ylabel('Label', fontsize=16)\n"
-    "- Colorbar labels: cbar.set_label('Label', fontsize=16)\n"
-    "- Legend: ax.legend(fontsize=16)\n"
-    "- Figure titles: fig.suptitle('Title', fontsize=16)\n\n"
-    
-    "IMMEDIATE ACTION REQUIRED:\n"
-    "When you receive ANY request, immediately respond with execute_custom_code function call.\n\n"
-    
-    "🎬 ANIMATION CAPABILITIES:\n"
-    
-    "For SINGLE VARIABLE ANIMATIONS (temperature OR precipitation):\n"
-    "```json\n"
-    "{\n"
-    "  \"python_code\": \"import builtins\\nimport matplotlib.animation as animation\\n\\n# Maryland coordinates\\nlat_min, lat_max = 37.9, 39.7\\nlon_min, lon_max = -79.5, -75.0\\n\\n# Create animation for Jan 1-3 (3 days)\\ntry:\\n    anim, fig = create_multi_day_animation(2023, 1, 1, 3, 'Tair', lat_min, lat_max, lon_min, lon_max, 'Maryland')\\n    \\n    # Save animation\\n    url = save_animation_to_blob(anim, 'maryland_temperature_jan1-3.gif', account_key)\\n    \\n    # Clean up\\n    plt.close(fig)\\n    result = url\\nexcept Exception as e:\\n    # Fallback to static plot if animation fails\\n    ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 1)\\n    data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).mean(dim='time')\\n    fig, ax = plt.subplots(figsize=(10, 8))\\n    im = ax.pcolormesh(data.lon, data.lat, data.values, cmap='RdYlBu_r', shading='auto')\\n    cbar = fig.colorbar(im, ax=ax)\\n    cbar.set_label('Temperature (K)', fontsize=16)\\n    ax.set_title('Maryland Temperature - Jan 1, 2023', fontsize=16)\\n    ax.set_xlabel('Longitude', fontsize=16)\\n    ax.set_ylabel('Latitude', fontsize=16)\\n    url = save_plot_to_blob_simple(fig, 'maryland_temp_fallback.png', account_key)\\n    plt.close(fig)\\n    ds.close()\\n    result = url\",\n"
-    "  \"user_request\": \"user's request here\"\n"
-    "}\n"
-    "```\n\n"
-    
-    "For DUAL VARIABLE ANIMATIONS (temperature AND precipitation together):\n"
-    "```json\n"
-    "{\n"
-    "  \"python_code\": \"import builtins\\nimport matplotlib.animation as animation\\n\\n# Maryland coordinates\\nlat_min, lat_max = 37.9, 39.7\\nlon_min, lon_max = -79.5, -75.0\\n\\n# Create dual animation for Jan 1 only (single day due to complexity)\\ntry:\\n    anim, fig = create_dual_variable_animation(2023, 1, 1, 1, lat_min, lat_max, lon_min, lon_max, 'Maryland')\\n    \\n    # Save animation\\n    url = save_animation_to_blob(anim, 'maryland_temp_precip_jan1.gif', account_key)\\n    \\n    # Clean up\\n    plt.close(fig)\\n    result = url\\nexcept Exception as e:\\n    # Fallback to static subplot if animation fails\\n    ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 1)\\n    \\n    temp_data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).mean(dim='time')\\n    precip_data = ds['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).sum(dim='time')\\n    \\n    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))\\n    \\n    im1 = ax1.pcolormesh(temp_data.lon, temp_data.lat, temp_data.values, cmap='RdYlBu_r', shading='auto')\\n    cbar1 = fig.colorbar(im1, ax=ax1)\\n    cbar1.set_label('Temperature (K)', fontsize=16)\\n    ax1.set_title('Maryland Temperature', fontsize=16)\\n    ax1.set_xlabel('Longitude', fontsize=16)\\n    ax1.set_ylabel('Latitude', fontsize=16)\\n    \\n    im2 = ax2.pcolormesh(precip_data.lon, precip_data.lat, precip_data.values, cmap='Blues', shading='auto')\\n    cbar2 = fig.colorbar(im2, ax=ax2)\\n    cbar2.set_label('Precipitation (kg/m²)', fontsize=16)\\n    ax2.set_title('Maryland Precipitation', fontsize=16)\\n    ax2.set_xlabel('Longitude', fontsize=16)\\n    ax2.set_ylabel('Latitude', fontsize=16)\\n    \\n    plt.tight_layout()\\n    url = save_plot_to_blob_simple(fig, 'maryland_temp_precip_static.png', account_key)\\n    plt.close(fig)\\n    ds.close()\\n    result = url\",\n"
-    "  \"user_request\": \"user's request here\"\n"
-    "}\n"
-    "```\n\n"
-    
-    "FOR SUBPLOT REQUESTS like 'subplots of precipitation and temperature':\n"
-    "```json\n"
-    "{\n"
-    "  \"python_code\": \"import builtins\\n\\n# East Lansing coordinates\\nlat_min, lat_max = 42.7, 42.8\\nlon_min, lon_max = -84.5, -84.4\\n\\n# Load single day data - MUST unpack tuple\\nds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)\\n\\n# Extract precipitation data\\nprecip_data = ds['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max))\\nprecip_accumulated = precip_data.sum(dim='time')\\n\\n# Extract temperature data\\ntemp_data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max))\\ntemp_avg = temp_data.mean(dim='time')\\n\\n# Create 2x1 subplots\\nfig, axes = plt.subplots(2, 1, figsize=(12, 14))\\n\\n# Subplot 1: Precipitation\\nim1 = axes[0].pcolormesh(precip_accumulated.lon, precip_accumulated.lat, precip_accumulated.values, cmap='Blues', shading='auto')\\ncbar1 = fig.colorbar(im1, ax=axes[0])\\ncbar1.set_label('Accumulated Precipitation (kg/m²)', fontsize=16)\\naxes[0].set_title('East Lansing Precipitation - January 3, 2023', fontsize=16)\\naxes[0].set_xlabel('Longitude', fontsize=16)\\naxes[0].set_ylabel('Latitude', fontsize=16)\\n\\n# Subplot 2: Temperature\\nim2 = axes[1].pcolormesh(temp_avg.lon, temp_avg.lat, temp_avg.values, cmap='RdYlBu_r', shading='auto')\\ncbar2 = fig.colorbar(im2, ax=axes[1])\\ncbar2.set_label('Average Temperature (K)', fontsize=16)\\naxes[1].set_title('East Lansing Temperature - January 3, 2023', fontsize=16)\\naxes[1].set_xlabel('Longitude', fontsize=16)\\naxes[1].set_ylabel('Latitude', fontsize=16)\\n\\nplt.tight_layout()\\nurl = save_plot_to_blob_simple(fig, 'eastlansing_subplots_jan3.png', account_key)\\nplt.close(fig)\\nds.close()\\nresult = url\",\n"
-    "  \"user_request\": \"user's original request here\"\n"
-    "}\n"
-    "```\n\n"
-    
-    "EXECUTION RULES:\n"
-    "1. 🔥 MANDATORY: Call execute_custom_code for EVERY request\n"
-    "2. 📝 Use proper JSON format with python_code and user_request\n"
-    "3. 🔧 ALWAYS unpack tuples: ds, _ = load_specific_date_kerchunk(...)\n"
-    "4. 📊 For subplots: fig, axes = plt.subplots(rows, cols, figsize=...)\n"
-    "5. 🎨 Use axes[0], axes[1] for subplot access\n"
-    "6. 🏷️ Create individual colorbars: fig.colorbar(im, ax=axes[i])\n"
-    "7. 💾 ALWAYS set result = final_output\n"
-    "8. 🚪 ALWAYS close datasets: ds.close()\n"
-    "9. 🎬 For animations: Use try/except with static fallbacks\n"
-    "10. 🔄 For dual variables: Use create_dual_variable_animation()\n"
-    "11. 🎨 ALWAYS use fontsize=16 for ALL text elements\n\n"
-    
-    "COORDINATES:\n"
-    "- East Lansing: 42.7, 42.8, -84.5, -84.4\n"
-    "- Michigan: 41.7, 48.2, -90.4, -82.4\n"
-    "- California: 32.5, 42.0, -124.4, -114.1\n"
-    "- Florida: 24.5, 31.0, -87.6, -80.0\n"
-    "- Maryland: 37.9, 39.7, -79.5, -75.0\n\n"
-    
-    "VARIABLES:\n"
-    "- Temperature: 'Tair'\n"
-    "- Precipitation: 'Rainf'\n\n"
-    
-    "🎯 IMMEDIATE RESPONSE REQUIRED: Call execute_custom_code NOW!\n"
-),
+    name="nldas3-static-frame-animation-agent",
+    instructions=instructions,
     tools=text_tools,
     tool_resources=text_tool_resources
 )
 
+# ---------- Create visualization agent ----------
 viz_agent = proj.agents.create_agent(
     model=VIZ_MODEL,
     name="nldas3-visualization-agent",
     instructions=(
-        "You produce image-ready prompts and visual specifications (titles, legends, units, "
-        "color ramps, captions) for NLDAS-3 figures such as maps and overlays. "
-        "Create detailed prompts that can be used with DALL-E or other image generation services. "
-        "Include technical specifications for map projections, color schemes, and data overlays."
+        "You produce image-ready prompts and visual specifications for NLDAS-3 figures. "
+        "Create detailed prompts for map projections, color schemes, and data overlays."
     ),
     tools=[]
 )
@@ -247,14 +451,8 @@ if search_conn_id and AI_SEARCH_INDEX_NAME:
 
 tools_info.append({
     "type": "function",
-    "name": "get_weather_data",
-    "description": "NLDAS-3 weather data retrieval function with conditional visualization"
-})
-
-tools_info.append({
-    "type": "function",
     "name": "execute_custom_code",
-    "description": "Dynamic Python code execution for complex NLDAS-3 analysis"
+    "description": "Execute custom Python code for NLDAS-3 analysis with static frame animation support"
 })
 
 agent_info = {
@@ -264,7 +462,14 @@ agent_info = {
             "id": text_agent.id,
             "name": text_agent.name,
             "model": TEXT_MODEL,
-            "capabilities": ["grounded-qa", "metadata-lookup", "explanations", "weather-data-retrieval", "conditional-visualization", "dynamic-code-execution"],
+            "capabilities": [
+                "direct-code-execution", 
+                "subplot-creation", 
+                "proper-colorbar-scaling", 
+                "map-generation", 
+                "formatted-time-series",
+                "static-frame-animations"
+            ],
             "tools": tools_info
         },
         "visualization": {
@@ -280,9 +485,15 @@ agent_info = {
 with open("agent_info.json", "w") as f:
     json.dump(agent_info, f, indent=2)
 
-print(f"Created text agent: {text_agent.id}")
+print(f"Created STATIC FRAME animation text agent: {text_agent.id}")
 print(f"Created visualization agent: {viz_agent.id}")
-print("Text agent now includes:")
-print("  - Weather data function with conditional visualization")
-print("  - Dynamic code execution for complex analysis")
+print("FINAL agent features:")
+print("  - Static frame animation generation (eliminates white colorbar)")
+print("  - Individual frames with independent colorbars")
+print("  - PIL-based GIF creation from complete images")
+print("  - Consistent color scaling across animation frames")
+print("  - Cartopy geographic features support")
+print("  - Formatted time series with proper axis labels")
+print("  - Robust error handling and fallbacks")
+print("  - Complete elimination of matplotlib.animation object reference issues")
 print("Saved agent_info.json")

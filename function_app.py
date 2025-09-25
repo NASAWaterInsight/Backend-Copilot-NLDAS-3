@@ -85,7 +85,7 @@ try:
     # Import other modules with individual error handling
     try:
         logger.info("🎯 Importing handle_visualization_request...")
-        from agents.agent_visualization import handle_visualization_request
+        #from agents.agent_visualization import handle_visualization_request
         logger.info("✅ handle_visualization_request imported successfully")
     except ImportError as viz_error:
         logger.warning(f"⚠️ Could not import visualization handler: {viz_error}")

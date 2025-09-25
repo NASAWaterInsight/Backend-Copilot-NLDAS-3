@@ -77,12 +77,61 @@ def get_mapped_variable(variable: str, available_vars: list):
         if nldas_name in available_vars:
             suggestions.append(f"For {common_name} use '{nldas_name}'")
     
+    # ENHANCED: Add note about full year availability
+    suggestions.append("📅 Full year 2023 data available (January-December)")
+    
     return None, suggestions
 
 def get_account_key():
-    """Get storage account key from Azure Key Vault."""
-    cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
-    return SecretClient(vault_url=VAULT_URL, credential=cred).get_secret(VAULT_SECRET).value
+    """Get storage account key from Azure Key Vault with enhanced validation."""
+    try:
+        cred = ClientSecretCredential(tenant_id=TENANT_ID, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+        secret_client = SecretClient(vault_url=VAULT_URL, credential=cred)
+        secret = secret_client.get_secret(VAULT_SECRET)
+        
+        # ENHANCED: Clean and validate the key
+        raw_key = secret.value
+        if not raw_key:
+            raise ValueError("Empty key retrieved from Key Vault")
+        
+        # Clean the key - remove whitespace and newlines
+        cleaned_key = raw_key.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+        
+        # Validate Base64 format by attempting to decode
+        try:
+            import base64
+            base64.b64decode(cleaned_key)
+            logging.info(f"✅ Storage key validated - length: {len(cleaned_key)} chars")
+        except Exception as decode_error:
+            logging.error(f"❌ Invalid Base64 key from Key Vault: {decode_error}")
+            logging.error(f"❌ Key preview: {cleaned_key[:20]}...{cleaned_key[-10:] if len(cleaned_key) > 30 else ''}")
+            raise ValueError(f"Invalid Base64 storage key: {decode_error}")
+        
+        return cleaned_key
+        
+    except Exception as e:
+        logging.error(f"Failed to get account key: {e}")
+        # EMERGENCY FALLBACK: Try with a fresh client credential
+        try:
+            logging.info("🔄 Trying fresh credential for Key Vault...")
+            fresh_cred = ClientSecretCredential(
+                tenant_id=TENANT_ID, 
+                client_id=CLIENT_ID, 
+                client_secret=CLIENT_SECRET
+            )
+            fresh_client = SecretClient(vault_url=VAULT_URL, credential=fresh_cred)
+            fresh_secret = fresh_client.get_secret(VAULT_SECRET)
+            fresh_key = fresh_secret.value.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+            
+            # Validate again
+            import base64
+            base64.b64decode(fresh_key)
+            logging.info("✅ Fresh key retrieved and validated")
+            return fresh_key
+            
+        except Exception as fresh_error:
+            logging.error(f"❌ Fresh credential also failed: {fresh_error}")
+            raise Exception(f"Could not retrieve valid storage key after retry: {fresh_error}")
 
 def _kerchunk_fs(account_name: str, account_key: str):
     """Filesystem for listing/reading kerchunk JSON blobs."""
@@ -194,177 +243,172 @@ def find_available_kerchunk_files(account_name: str, account_key: str):
 def load_specific_date_kerchunk(account_name: str, account_key: str, year: int, month: int, day: int):
     """
     Load kerchunk data for a specific date with enhanced error handling
+    UPDATED: Dynamic date validation - no hard-coded limits
     """
     # Format the date as NLDAS expects
     nldas_date, dt = parse_date_to_nldas_format(year, month, day)
+    
+    # REMOVED: Hard-coded year validation - let the system be flexible
+    # Only validate basic date format
+    if month < 1 or month > 12:
+        raise ValueError(f"Month must be 1-12. Requested: {month}")
+    
+    if day < 1 or day > 31:
+        raise ValueError(f"Day must be 1-31. Requested: {day}")
     
     # Build expected filename
     expected_filename = f"kerchunk_NLDAS_FOR0010_H.{nldas_date}.030.beta.json"
     expected_path = f"{KERCHUNK_CONTAINER}/{expected_filename}"
     
+    available_dates = []
+    
     try:
-        # First, get list of available dates to handle padding errors gracefully
-        available_dates = find_available_kerchunk_files(account_name, account_key)
-        
-        if not available_dates:
-            raise FileNotFoundError("No kerchunk files found in container")
-        
-        # Check if requested date is available
-        requested_date_available = any(
-            d["date"].date() == dt.date() for d in available_dates
-        )
-        
-        if not requested_date_available:
-            # Find closest available date
-            logging.warning(f"Date {dt.date()} not available. Finding closest date...")
-            target_date = dt
-            closest = min(available_dates, key=lambda x: abs((x["date"] - target_date).days))
-            days_diff = abs((closest["date"] - target_date).days)
+        # Get list of available dates to handle gracefully
+        try:
+            available_dates = find_available_kerchunk_files(account_name, account_key)
             
-            if days_diff > 7:  # Don't use data more than 7 days away
-                available_range = f"{available_dates[0]['date'].date()} to {available_dates[-1]['date'].date()}"
-                raise FileNotFoundError(
-                    f"Date {dt.date()} not available. Closest date is {closest['date'].date()} ({days_diff} days away). "
-                    f"Available dates: {available_range}"
-                )
+            # ENHANCED: Log data availability for debugging
+            if available_dates:
+                first_date = available_dates[0]['date']
+                last_date = available_dates[-1]['date']
+                total_days = len(available_dates)
+                logging.info(f"📅 Data available: {first_date.strftime('%Y-%m-%d')} to {last_date.strftime('%Y-%m-%d')} ({total_days} days)")
+                
+                # Check coverage by month and year
+                years_available = sorted(set(d['date'].year for d in available_dates))
+                months_available = sorted(set(d['date'].month for d in available_dates))
+                logging.info(f"📊 Years available: {years_available}")
+                logging.info(f"📊 Months available: {months_available}")
             
-            # Use closest date
-            expected_path = closest["path"]
-            expected_filename = closest["filename"]
-            logging.info(f"Using closest available date: {closest['date'].date()}")
+        except Exception as find_error:
+            logging.warning(f"Could not get available dates list: {find_error}")
         
+        # ENHANCED: Try to load the exact file first
         fs = _kerchunk_fs(account_name, account_key)
         
         try:
-            # Check file size first
-            file_info = fs.info(expected_path)
-            file_size = file_info.get('size', 0)
-            logging.info(f"Loading kerchunk file: {expected_path} (size: {file_size} bytes)")
-            
-            if file_size == 0:
-                raise ValueError(f"Kerchunk file {expected_path} is empty (0 bytes)")
-            
-            # Load the file with enhanced error handling
-            with fs.open(expected_path, "r") as f:
-                content = f.read()
-                
-            if not content.strip():
-                raise ValueError(f"Kerchunk file {expected_path} contains no data")
-            
-            # Try to parse JSON with better error handling
-            try:
-                if not content or not content.strip():
-                    raise ValueError(f"Kerchunk file {expected_path} is empty or contains only whitespace")
-                
-                # Log content preview for debugging
-                content_preview = content[:100] if content else "EMPTY"
-                logging.debug(f"JSON content preview: {content_preview}")
-                
-                refs = json.loads(content)
-                
-            except json.JSONDecodeError as je:
-                # Enhanced error logging
-                logging.error(f"JSON decode error in {expected_path}: {je}")
-                logging.error(f"Content length: {len(content) if content else 0}")
-                logging.error(f"Content preview: {content[:200] if content else 'EMPTY'}")
-                
-                # If JSON parsing fails, try fallback immediately
-                raise ValueError(f"Invalid JSON in {expected_path}. Error: {je}")
-            
-            # Validate refs structure
-            if not isinstance(refs, dict) or "refs" not in refs:
-                raise ValueError(f"Invalid kerchunk structure in {expected_path}")
-            
-        except Exception as file_error:
-            logging.error(f"Error loading {expected_path}: {file_error}")
-            
-            # Enhanced fallback logic - try multiple available dates
-            fallback_attempts = 0
-            max_fallback_attempts = 3
-            
-            for fallback_candidate in available_dates[:max_fallback_attempts]:
-                if fallback_candidate["path"] == expected_path:
-                    continue  # Skip the one that failed
-                
-                fallback_attempts += 1
-                logging.info(f"Trying fallback {fallback_attempts}: {fallback_candidate['date'].date()}")
-                
-                try:
-                    fallback_path = fallback_candidate["path"]
-                    with fs.open(fallback_path, "r") as f:
-                        fallback_content = f.read()
-                    
-                    if not fallback_content.strip():
-                        continue
-                    
-                    refs = json.loads(fallback_content)
-                    
-                    if isinstance(refs, dict) and "refs" in refs:
-                        logging.info(f"Successfully loaded fallback date: {fallback_candidate['date'].date()}")
-                        
-                        debug = {
-                            "kerchunk_container": KERCHUNK_CONTAINER,
-                            "kerchunk_blob_used": fallback_path,
-                            "kerchunk_is_combined": False,
-                            "requested_date": str(dt.date()),
-                            "actual_date": str(fallback_candidate["date"].date()),
-                            "fallback_reason": f"Original file error: {str(file_error)}",
-                            "nldas_date_format": fallback_candidate["nldas_format"],
-                            "kerchunk_ref_count": len(refs.get("refs", {})),
-                            "fallback_attempt": fallback_attempts
-                        }
-                        break
-                        
-                except Exception as fallback_error:
-                    logging.warning(f"Fallback {fallback_attempts} failed: {fallback_error}")
-                    continue
+            # Check if the exact file exists
+            if fs.exists(expected_path):
+                logging.info(f"✅ Found exact file: {expected_filename}")
+                refs, blob_used, is_combined = _discover_kerchunk_index_for_date(account_name, account_key, expected_path)
             else:
-                # All fallbacks failed
-                raise Exception(f"All fallback attempts failed. Original error: {file_error}")
-        else:
-            # Original file loaded successfully
-            debug = {
-                "kerchunk_container": KERCHUNK_CONTAINER,
-                "kerchunk_blob_used": expected_path,
-                "kerchunk_is_combined": False,
-                "requested_date": str(dt.date()),
-                "nldas_date_format": nldas_date,
-                "kerchunk_ref_count": len(refs.get("refs", {})),
-                "file_size_bytes": file_size,
-            }
+                # File doesn't exist - find closest or report what's available
+                if available_dates:
+                    requested_date_available = any(
+                        d["date"].date() == dt.date() for d in available_dates
+                    )
+                    
+                    if not requested_date_available:
+                        # Find closest available date
+                        logging.warning(f"Date {dt.date()} not available. Finding closest date...")
+                        target_date = dt
+                        closest = min(available_dates, key=lambda x: abs((x["date"] - target_date).days))
+                        days_diff = abs((closest["date"] - target_date).days)
+                        
+                        if days_diff > 30:  # More flexible - allow up to 30 days difference
+                            # Show what's actually available
+                            years_available = sorted(set(d['date'].year for d in available_dates))
+                            months_available = sorted(set(d['date'].month for d in available_dates))
+                            month_names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+                            available_months = [month_names[m-1] for m in months_available if 1 <= m <= 12]
+                            
+                            available_range = f"{available_dates[0]['date'].date()} to {available_dates[-1]['date'].date()}"
+                            raise FileNotFoundError(
+                                f"Date {dt.date()} not available. Closest date is {closest['date'].date()} ({days_diff} days away). "
+                                f"Available years: {years_available}. "
+                                f"Available months: {', '.join(available_months)}. "
+                                f"Date range: {available_range}"
+                            )
+                        
+                        # Use closest date
+                        expected_path = closest["path"]
+                        expected_filename = closest["filename"]
+                        logging.info(f"Using closest available date: {closest['date'].date()} (originally requested: {dt.date()})")
+                        
+                        refs, blob_used, is_combined = _discover_kerchunk_index_for_date(account_name, account_key, expected_path)
+                    else:
+                        # Date is available, find the correct path
+                        matching_date = next(d for d in available_dates if d["date"].date() == dt.date())
+                        expected_path = matching_date["path"]
+                        expected_filename = matching_date["filename"]
+                        logging.info(f"✅ Found matching date: {dt.date()}")
+                        
+                        refs, blob_used, is_combined = _discover_kerchunk_index_for_date(account_name, account_key, expected_path)
+                else:
+                    raise FileNotFoundError(f"No kerchunk data found in container. Cannot load {dt.date()}")
         
-        # Create mapper and open dataset
-        try:
-            mapper = fsspec.get_mapper(
-                "reference://",
-                fo=refs,
-                remote_protocol="az",
-                remote_options={"account_name": account_name, "account_key": account_key},
-            )
-            
-            ds = xr.open_dataset(mapper, engine="zarr", backend_kwargs={"consolidated": False})
-            return ds, debug
-            
-        except Exception as mapper_error:
-            logging.error(f"Error creating mapper or opening dataset: {mapper_error}")
-            raise Exception(f"Failed to open dataset: {str(mapper_error)}")
-            
+        except FileNotFoundError:
+            raise
+        except Exception as load_error:
+            logging.error(f"Failed to load kerchunk file: {load_error}")
+            raise Exception(f"Failed to load kerchunk data: {str(load_error)}")
+        
+        # Create the dataset
+        debug = {
+            "kerchunk_container": KERCHUNK_CONTAINER,
+            "kerchunk_blob_used": blob_used,
+            "kerchunk_is_combined": is_combined,
+            "kerchunk_ref_count": len(refs.get("refs", {})),
+            "requested_date": dt.date(),
+            "available_date_range": f"{available_dates[0]['date'].date()} to {available_dates[-1]['date'].date()}" if available_dates else "unknown"
+        }
+
+        mapper = fsspec.get_mapper(
+            "reference://",
+            fo=refs,
+            remote_protocol="az",
+            remote_options={"account_name": account_name, "account_key": account_key},
+        )
+
+        ds = xr.open_dataset(mapper, engine="zarr", backend_kwargs={"consolidated": False})
+        return ds, debug
+        
     except Exception as e:
-        # Enhanced error message with available dates
-        available_dates_list = [d['date'].strftime('%Y-%m-%d') for d in available_dates[:5]] if available_dates else ["None"]
-        error_msg = f"Failed to load kerchunk data for {dt.date()}: {str(e)}. Available dates: {available_dates_list}"
+        # ENHANCED: Dynamic error message based on what's available
+        available_info = "No data availability information"
+        if available_dates:
+            years_available = sorted(set(d['date'].year for d in available_dates))
+            months_available = sorted(set(d['date'].month for d in available_dates))
+            available_info = f"Available years: {years_available}, months: {months_available}"
+        
+        error_msg = f"Failed to load kerchunk data for {dt.date()}: {str(e)}. {available_info}"
         logging.error(error_msg)
         raise Exception(error_msg)
 
-def save_plot_to_blob_simple(figure, filename, account_key):
+def _discover_kerchunk_index_for_date(account_name: str, account_key: str, blob_path: str):
     """
-    Save matplotlib figure to Azure Blob Storage and return the URL.
+    Load a specific kerchunk file by path
+    Returns (refs_dict, blob_path_used, is_combined)
+    """
+    fs = _kerchunk_fs(account_name, account_key)
+    
+    try:
+        with fs.open(blob_path, "r") as f:
+            refs = json.load(f)
+        return refs, blob_path, False
+    except Exception as e:
+        raise Exception(f"Failed to load kerchunk file {blob_path}: {str(e)}")
+
+def save_plot_to_blob_simple(fig_or_buffer, filename: str, account_key: str):
+    """
+    Save a matplotlib figure OR BytesIO buffer to Azure Blob Storage and return the URL
+    ENHANCED: Handle both matplotlib figures and BytesIO buffers for GIF animations
     """
     try:
-        # Save figure to bytes
-        buffer = io.BytesIO()
-        figure.savefig(buffer, format='png', dpi=150, bbox_inches='tight', facecolor='white')
-        buffer.seek(0)
+        # Check what type of object we received
+        import io
+        
+        if isinstance(fig_or_buffer, io.BytesIO):
+            # It's already a BytesIO buffer (e.g., GIF data)
+            logging.info(f"💾 Saving BytesIO buffer to blob: {filename}")
+            buffer = fig_or_buffer
+            buffer.seek(0)  # Ensure we're at the beginning
+        else:
+            # It's a matplotlib figure - convert to buffer
+            logging.info(f"💾 Converting matplotlib figure to buffer: {filename}")
+            buffer = io.BytesIO()
+            fig_or_buffer.savefig(buffer, format='png', dpi=150, bbox_inches='tight', facecolor='white')
+            buffer.seek(0)
         
         # Upload to blob storage
         blob_service_client = BlobServiceClient(
@@ -388,7 +432,7 @@ def save_plot_to_blob_simple(figure, filename, account_key):
             blob=filename
         )
         
-        # Upload the image
+        # Upload the data
         blob_client.upload_blob(buffer.getvalue(), overwrite=True)
         
         # Generate a SAS URL for access (valid for 24 hours)
@@ -403,211 +447,132 @@ def save_plot_to_blob_simple(figure, filename, account_key):
         
         # Return the blob URL with SAS token
         blob_url = f"https://{ACCOUNT_NAME}.blob.core.windows.net/{container_name}/{filename}?{sas_token}"
-        logging.info(f"Image saved to: {blob_url}")
+        logging.info(f"✅ Successfully saved to blob: {blob_url}")
         return blob_url
         
     except Exception as e:
+        logging.error(f"❌ Failed to save to blob storage: {e}")
+        logging.error(f"❌ Object type: {type(fig_or_buffer)}")
         raise Exception(f"Failed to save to blob storage: {str(e)}")
 
-# Add a mapping for descriptive variable labels
-VARIABLE_LABELS = {
-    "Tair": "Temperature (K)",
-    "Rainf": "Accumulated Precipitation (mm)",
-    "Qair": "Specific Humidity (kg/kg)",
-    "PSurf": "Surface Pressure (Pa)",
-    "LWdown": "Longwave Radiation (W/m²)",
-    "SWdown": "Shortwave Radiation (W/m²)"
-}
-
-def create_weather_map_with_blob_storage(ds, variable, region_name, lat_min, lat_max, lon_min, lon_max, year, month, day=None):
+def handle_weather_function_call(function_args: dict):
     """
-    Create weather map and save to blob storage - returns URL
+    Handle weather function calls from the agent
     """
-    fig = None
     try:
-        # Set matplotlib backend
-        plt.switch_backend('Agg')
-        
-        # Extract data
-        data = ds[variable].isel(time=0).sel(
-            lat=builtins.slice(lat_min, lat_max),   
-            lon=builtins.slice(lon_min, lon_max)    
-        )
-        
-        logging.info(f"Data shape: {data.shape}")
-        
-        # Create plot
-        fig, ax = plt.subplots(figsize=(12, 8))
-        im = data.plot(ax=ax, cmap="viridis", add_colorbar=False)
-        
-        # Get descriptive label for the variable
-        variable_label = VARIABLE_LABELS.get(variable, variable)  # Fallback to raw name if not found
-        
-        # Add color bar with descriptive label
-        cbar = fig.colorbar(im, ax=ax, orientation="vertical")
-        cbar.set_label(variable_label, fontsize=12)
-        
-        # Format date and filename
-        date_str = f"{year}-{month:02d}"
-        if day:
-            date_str += f"-{day:02d}"
-        
-        plt.title(f'{region_name} {variable_label}\n{date_str}', fontsize=14, fontweight='bold')
-        plt.xlabel('Longitude')
-        plt.ylabel('Latitude')
-        
-        # Create filename
-        filename = f"{region_name}_{variable}_{year}_{month:02d}"
-        if day:
-            filename += f"_{day:02d}"
-        filename += "_map.png"
-        
-        # Save to blob storage
+        # Get account key
         account_key = get_account_key()
-        blob_url = save_plot_to_blob_simple(fig, filename, account_key)
-        plt.close(fig)
         
-        return {
-            "status": "created",
-            "format": "png",
-            "blob_url": blob_url,
-            "filename": filename,
-            "description": f"Weather map for {variable_label} - {date_str}",
-            "note": "Image saved to blob storage and accessible via URL"
-        }
+        # Extract parameters
+        lat_min = function_args.get("lat_min")
+        lat_max = function_args.get("lat_max") 
+        lon_min = function_args.get("lon_min")
+        lon_max = function_args.get("lon_max")
+        variable = function_args.get("variable")
+        year = function_args.get("year")
+        month = function_args.get("month")
+        day = function_args.get("day", 1)  # Default to 1st of month
+        create_visualization = function_args.get("create_visualization", False)
         
-    except Exception as e:
-        if fig:
-            plt.close(fig)
-        raise Exception(f"Map creation failed: {str(e)}")
-
-def handle_weather_function_call(args: dict):
-    """
-    Handles weather function calls with blob storage support
-    """
-    # Set matplotlib backend
-    import matplotlib
-    matplotlib.use('Agg')
-    
-    debug_info = {
-        "approach": "blob_storage_response",
-        "visualization_requested": args.get("create_visualization", False)
-    }
-
-    try:
-        # Step 1: Get account key
-        account_key = get_account_key()
-
-        # Step 2: Load dataset
-        ds, kdbg = load_nldas_from_kerchunk(ACCOUNT_NAME, account_key, prefer_combined=True)
-        # Only keep essential debug info
-        debug_info["kerchunk_loaded"] = True
-        debug_info["kerchunk_is_combined"] = kdbg.get("kerchunk_is_combined", False)
-
-        # Step 3: Map variable
-        variable = args.get("variable", "LWdown")
-        available_vars = list(ds.data_vars)
-        mapped_variable, suggestions = get_mapped_variable(variable, available_vars)
+        logging.info(f"Weather function call: {variable} for {year}-{month:02d}-{day:02d}")
+        logging.info(f"Region: lat {lat_min}-{lat_max}, lon {lon_min}-{lon_max}")
+        logging.info(f"Create visualization: {create_visualization}")
         
-        if not mapped_variable:
-            ds.close()
+        # Load the data
+        ds, debug_info = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
+        
+        # Map variable name
+        available_vars = list(ds.data_vars.keys())
+        mapped_var, suggestions = get_mapped_variable(variable, available_vars)
+        
+        if not mapped_var:
             return {
                 "status": "error",
-                "error": f"Variable '{variable}' not found",
-                "suggestions": suggestions[:3],  # Limit suggestions
+                "error": f"Variable '{variable}' not found. Available: {available_vars}",
+                "suggestions": suggestions
+            }
+        
+        # Extract data for the region
+        try:
+            data = ds[mapped_var].sel(
+                lat=slice(lat_min, lat_max),
+                lon=slice(lon_min, lon_max)
+            )
+            
+            # Calculate statistics
+            if mapped_var == 'Rainf':
+                # Sum precipitation over time
+                daily_total = data.sum(dim='time')
+                value = float(daily_total.mean().values)
+                unit = "mm" if mapped_var == 'Rainf' else ds[mapped_var].attrs.get('units', 'unknown')
+            else:
+                # Average for other variables
+                daily_avg = data.mean(dim='time')
+                value = float(daily_avg.mean().values)
+                unit = ds[mapped_var].attrs.get('units', 'unknown')
+            
+            result = {
+                "status": "success",
+                "variable": mapped_var,
+                "value": value,
+                "unit": unit,
+                "date": f"{year}-{month:02d}-{day:02d}",
+                "region": f"lat {lat_min}-{lat_max}, lon {lon_min}-{lon_max}",
                 "debug": debug_info
             }
-        
-        # Step 4: Get coordinates
-        lat_min = args.get("lat_min", 37.9)
-        lat_max = args.get("lat_max", 39.7) 
-        lon_min = args.get("lon_min", -79.5)
-        lon_max = args.get("lon_max", -75.0)
-        
-        # Step 5: Extract data
-        region_data = ds[mapped_variable].isel(time=0).sel(
-            lat=builtins.slice(lat_min, lat_max),
-            lon=builtins.slice(lon_min, lon_max)
-        )
-
-        # Quick stats
-        average_val = float(region_data.mean().values)
-        min_val = float(region_data.min().values)
-        max_val = float(region_data.max().values)
-        units = region_data.attrs.get('units', 'unknown')
-        long_name = region_data.attrs.get('long_name', mapped_variable)
-
-        # Build COMPACT result
-        result = {
-            "status": "success",
-            "variable": {
-                "name": mapped_variable,
-                "units": units,
-                "description": long_name
-            },
-            "region_stats": {
-                "average": f"{average_val:.2f}",
-                "range": f"{min_val:.2f} to {max_val:.2f}",
-                "units": units,
-                "grid_points": int(region_data.size)
-            },
-            "coordinates": {
-                "lat_range": f"{lat_min} to {lat_max}",
-                "lon_range": f"{lon_min} to {lon_max}"
-            }
-        }
-
-        # Step 6: Handle visualization request - ALWAYS CREATE MAP FOR "map" REQUESTS
-        create_map = args.get("create_visualization", False)
-        
-        # Auto-detect map requests from query
-        if not create_map:
-            query_text = str(args).lower()
-            map_keywords = ["map", "plot", "chart", "visualization", "visualize", "show", "display"]
-            create_map = any(keyword in query_text for keyword in map_keywords)
-            debug_info["auto_detected_map_request"] = create_map
-        
-        if create_map:
-            try:
-                viz_result = create_weather_map_with_blob_storage(
-                    ds, mapped_variable, "Region",
-                    lat_min, lat_max, lon_min, lon_max,
-                    args.get("year", 2023),
-                    args.get("month", 1),
-                    args.get("day")
-                )
-                result["visualization"] = viz_result
-                result["note"] = "Data retrieved and map created with blob URL"
-                debug_info["blob_url_created"] = True
-            except Exception as e:
-                result["visualization_error"] = f"Map creation failed: {str(e)}"
-                result["note"] = "Data retrieved but map creation failed"
-                debug_info["blob_url_created"] = False
-        else:
-            result["note"] = "Data retrieved successfully - no visualization requested"
-            debug_info["blob_url_created"] = False
-        
-        # Close dataset
-        ds.close()
-        
-        # Add minimal debug info
-        result["debug"] = debug_info
-        result["debug"] = debug_info
-        
-        return result
-
+            
+            # Create visualization if requested
+            if create_visualization:
+                try:
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    
+                    # Plot the daily average/sum
+                    if mapped_var == 'Rainf':
+                        plot_data = daily_total
+                        title = f"Daily Total {mapped_var} - {year}-{month:02d}-{day:02d}"
+                        cmap = 'Blues'
+                    else:
+                        plot_data = daily_avg
+                        title = f"Daily Average {mapped_var} - {year}-{month:02d}-{day:02d}"
+                        cmap = 'viridis'
+                    
+                    im = ax.pcolormesh(plot_data.lon, plot_data.lat, plot_data.values, 
+                                     cmap=cmap, shading='auto')
+                    
+                    cbar = fig.colorbar(im, ax=ax)
+                    cbar.set_label(f"{mapped_var} ({unit})", fontsize=16)
+                    
+                    ax.set_title(title, fontsize=16)
+                    ax.set_xlabel('Longitude', fontsize=16)
+                    ax.set_ylabel('Latitude', fontsize=16)
+                    
+                    # Save to blob storage
+                    filename = f"{mapped_var}_{year}{month:02d}{day:02d}_{lat_min}_{lat_max}_{lon_min}_{lon_max}.png"
+                    blob_url = save_plot_to_blob_simple(fig, filename, account_key)
+                    
+                    plt.close(fig)
+                    
+                    result["visualization"] = {
+                        "url": blob_url,
+                        "filename": filename
+                    }
+                    
+                except Exception as viz_error:
+                    logging.error(f"Visualization creation failed: {viz_error}")
+                    result["visualization_error"] = str(viz_error)
+            
+            ds.close()
+            return result
+            
+        except Exception as e:
+            ds.close()
+            raise Exception(f"Data extraction failed: {str(e)}")
+            
     except Exception as e:
+        logging.error(f"Weather function call failed: {e}")
         return {
-            "status": "error",
-            "error": f"Processing failed: {str(e)}",
-            "debug": debug_info
+            "status": "error", 
+            "error": str(e)
         }
-        
-        return result
 
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Processing failed: {str(e)}",
-            "debug": debug_info
-        }
+# ...remaining code...

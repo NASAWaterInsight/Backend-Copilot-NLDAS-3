@@ -18,12 +18,10 @@ def test_cartopy():
         fig = plt.figure(figsize=(10, 6))
         ax = fig.add_subplot(111, projection=ccrs.PlateCarree())
         
-        # Add features
+        # Add features - ONLY LINES, NO FILLS
         ax.add_feature(cfeature.COASTLINE)
         ax.add_feature(cfeature.BORDERS)
         ax.add_feature(cfeature.STATES)
-        ax.add_feature(cfeature.OCEAN, color='lightblue')
-        ax.add_feature(cfeature.LAND, color='lightgray')
         
         # Set extent for Seattle area
         ax.set_extent([-123, -121, 47, 48], crs=ccrs.PlateCarree())

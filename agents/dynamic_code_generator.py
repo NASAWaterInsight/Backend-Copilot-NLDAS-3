@@ -2,6 +2,7 @@ import json
 import logging
 import traceback
 import builtins
+import time
 
 def execute_custom_code(args: dict):
     """
@@ -11,12 +12,21 @@ def execute_custom_code(args: dict):
         user_request = args.get("user_request", "Unknown request")
         python_code = args.get("python_code", "")
         
+        logging.info(f"=== EXECUTE_CUSTOM_CODE CALLED ===")
+        logging.info(f"User request: {user_request}")
+        logging.info(f"Python code provided: {bool(python_code)}")
+        logging.info(f"Code length: {len(python_code) if python_code else 0}")
+        
         if not python_code:
             return {
                 "status": "error",
                 "error": "No Python code provided",
                 "user_request": user_request
             }
+        
+        # Log first few lines of code for debugging
+        code_lines = python_code.split('\n')[:5]
+        logging.info(f"Code preview (first 5 lines): {code_lines}")
         
         logging.info(f"Executing custom code for: {user_request}")
         logging.info(f"Code to execute:\n{python_code}")
@@ -46,418 +56,24 @@ def execute_custom_code(args: dict):
                     logging.warning(f"Account key retrieval attempt {attempt + 1} failed: {key_error}")
                     if attempt == max_retries - 1:
                         raise Exception(f"Failed to get account key after {max_retries} attempts: {key_error}")
-                    import time
                     time.sleep(1)
             
-            # Helper function for multi-day data processing (for accumulation)
-            def load_and_combine_multi_day_data(start_year, start_month, start_day, num_days, variable, lat_min, lat_max, lon_min, lon_max):
+            # Define the process_daily_data function that the agent needs
+            def process_daily_data(data, variable_name):
                 """
-                Load and combine data from multiple days avoiding xarray alignment issues
-                FOR ACCUMULATION ONLY - removes time dimension
+                Apply appropriate aggregation based on variable type
                 """
-                import xarray as xr
-                from datetime import datetime, timedelta
+                # Variables that should be summed (accumulated)
+                accumulation_vars = ['Rainf', 'LWdown', 'SWdown']
                 
-                daily_data_list = []
-                
-                for day_offset in range(num_days):
-                    current_date = datetime(start_year, start_month, start_day) + timedelta(days=day_offset)
-                    
-                    try:
-                        # Load data for current day
-                        ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 
-                                                          current_date.year, current_date.month, current_date.day)
-                        
-                        # Extract variable and spatial subset
-                        daily_data = ds[variable].sel(
-                            lat=builtins.slice(lat_min, lat_max),
-                            lon=builtins.slice(lon_min, lon_max)
-                        )
-                        
-                        # Sum over time dimension for daily accumulation
-                        daily_total = daily_data.sum(dim='time')
-                        
-                        # Remove time coordinate to avoid alignment issues
-                        daily_total = daily_total.drop_vars('time', errors='ignore')
-                        
-                        daily_data_list.append(daily_total)
-                        ds.close()
-                        
-                        logging.info(f"Loaded data for {current_date.date()}")
-                        
-                    except Exception as e:
-                        logging.warning(f"Failed to load data for {current_date.date()}: {e}")
-                        continue
-                
-                if not daily_data_list:
-                    raise Exception("No daily data could be loaded")
-                
-                # Sum all daily totals (now they have compatible coordinates)
-                total_precipitation = sum(daily_data_list)
-                
-                logging.info(f"Combined {len(daily_data_list)} days of data")
-                return total_precipitation
-
-            # NEW: Helper function for time series analysis (preserves time dimension)
-            def load_multi_day_time_series(start_year, start_month, start_day, num_days, variable, lat_min, lat_max, lon_min, lon_max):
-                """
-                Load multiple days of data preserving the time dimension for time series analysis
-                """
-                import xarray as xr
-                from datetime import datetime, timedelta
-                
-                daily_datasets = []
-                
-                for day_offset in range(num_days):
-                    current_date = datetime(start_year, start_month, start_day) + timedelta(days=day_offset)
-                    
-                    try:
-                        # Load data for current day
-                        ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 
-                                                          current_date.year, current_date.month, current_date.day)
-                        
-                        # Extract variable and spatial subset
-                        daily_data = ds[variable].sel(
-                            lat=builtins.slice(lat_min, lat_max),
-                            lon=builtins.slice(lon_min, lon_max)
-                        )
-                        
-                        # Keep the dataset for concatenation (preserve time dimension)
-                        daily_datasets.append(daily_data)
-                        ds.close()
-                        
-                        logging.info(f"Loaded time series data for {current_date.date()}")
-                        
-                    except Exception as e:
-                        logging.warning(f"Failed to load data for {current_date.date()}: {e}")
-                        continue
-                
-                if not daily_datasets:
-                    raise Exception("No daily data could be loaded")
-                
-                # Concatenate along time dimension to create continuous time series
-                time_series_data = xr.concat(daily_datasets, dim='time')
-                
-                logging.info(f"Created time series with {len(daily_datasets)} days of data")
-                return time_series_data
+                if variable_name in accumulation_vars:
+                    # Sum for precipitation and radiation (daily totals)
+                    return data.sum(dim='time')
+                else:
+                    # Mean for temperature, humidity, pressure, wind (daily averages)
+                    return data.mean(dim='time')
             
-            # FIXED: Animation function for GIFs with proper imports
-            def save_animation_to_blob(animation, filename, account_key):
-                """
-                Save matplotlib animation to Azure Blob Storage as GIF and return URL
-                """
-                import matplotlib.animation as animation_module
-                from PIL import Image
-                import tempfile
-                import os
-                from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
-                from datetime import datetime, timedelta
-                
-                try:
-                    # Create temporary file for the GIF
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.gif') as tmp_file:
-                        temp_gif_path = tmp_file.name
-                    
-                    # Save animation as GIF with optimized settings
-                    writer = animation_module.PillowWriter(fps=1, bitrate=1800)
-                    animation.save(temp_gif_path, writer=writer)
-                    
-                    # Read the GIF file
-                    with open(temp_gif_path, 'rb') as gif_file:
-                        gif_data = gif_file.read()
-                    
-                    # Upload to blob storage
-                    blob_service_client = BlobServiceClient(
-                        account_url=f"https://{ACCOUNT_NAME}.blob.core.windows.net",
-                        credential=account_key
-                    )
-                    
-                    container_name = "animations"
-                    
-                    # Create container if it doesn't exist
-                    try:
-                        container_client = blob_service_client.get_container_client(container_name)
-                        if not container_client.exists():
-                            blob_service_client.create_container(container_name)
-                            logging.info(f"Created animations container")
-                    except Exception as container_error:
-                        logging.warning(f"Container warning: {container_error}")
-                    
-                    blob_client = blob_service_client.get_blob_client(
-                        container=container_name, 
-                        blob=filename
-                    )
-                    
-                    # Upload the GIF
-                    blob_client.upload_blob(gif_data, overwrite=True)
-                    
-                    # Generate SAS URL (valid for 24 hours)
-                    sas_token = generate_blob_sas(
-                        account_name=ACCOUNT_NAME,
-                        container_name=container_name,
-                        blob_name=filename,
-                        account_key=account_key,
-                        permission=BlobSasPermissions(read=True),
-                        expiry=datetime.utcnow() + timedelta(hours=24)
-                    )
-                    
-                    blob_url = f"https://{ACCOUNT_NAME}.blob.core.windows.net/{container_name}/{filename}?{sas_token}"
-                    
-                    # Clean up temporary file
-                    try:
-                        os.unlink(temp_gif_path)
-                    except:
-                        pass
-                    
-                    logging.info(f"Animation saved to: {blob_url}")
-                    return blob_url
-                    
-                except Exception as e:
-                    # Clean up temporary file on error
-                    try:
-                        if 'temp_gif_path' in locals():
-                            os.unlink(temp_gif_path)
-                    except:
-                        pass
-                    raise Exception(f"Failed to save animation to blob storage: {str(e)}")
-
-            # FIXED: Multi-day animation function with proper structure
-            def create_multi_day_animation(start_year, start_month, start_day, num_days, variable_name, lat_min, lat_max, lon_min, lon_max, region_name="Region"):
-                """
-                Create an animated GIF showing daily accumulated data over multiple days
-                """
-                import matplotlib.animation as animation_module
-                from datetime import datetime, timedelta
-                
-                logging.info(f"🎬 Creating {num_days}-day animation for {variable_name}")
-                
-                daily_data_list = []
-                daily_dates = []
-                
-                # Load data for each day
-                for day_offset in range(num_days):
-                    current_date = datetime(start_year, start_month, start_day) + timedelta(days=day_offset)
-                    
-                    try:
-                        logging.info(f"📅 Loading day {day_offset + 1}/{num_days}: {current_date.date()}")
-                        
-                        # Load data for current day
-                        ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 
-                                                          current_date.year, current_date.month, current_date.day)
-                        
-                        # Extract variable and spatial subset
-                        daily_data = ds[variable_name].sel(
-                            lat=builtins.slice(lat_min, lat_max),
-                            lon=builtins.slice(lon_min, lon_max)
-                        )
-                        
-                        # Sum over time for daily accumulation
-                        if variable_name == 'Rainf':
-                            daily_accumulated = daily_data.sum(dim='time')
-                        else:
-                            daily_accumulated = daily_data.mean(dim='time')
-                        
-                        daily_data_list.append(daily_accumulated)
-                        daily_dates.append(current_date)
-                        
-                        ds.close()
-                        
-                        logging.info(f"✅ Loaded {current_date.date()}")
-                        
-                    except Exception as e:
-                        logging.warning(f"⚠️ Failed to load data for {current_date.date()}: {e}")
-                        continue
-                
-                if not daily_data_list:
-                    raise Exception("No daily data could be loaded for animation")
-                
-                logging.info(f"📊 Successfully loaded {len(daily_data_list)} days of data")
-                
-                # Create the animation with FIXED structure
-                fig, ax = plt.subplots(figsize=(12, 10))
-                
-                # Determine global color scale for consistency
-                all_values = []
-                for data in daily_data_list:
-                    all_values.extend(data.values.flatten())
-                
-                vmin = min(all_values)
-                vmax = max(all_values)
-                
-                logging.info(f"🎨 Color scale: {vmin:.2f} to {vmax:.2f}")
-                
-                # Store colorbar reference to avoid recreating
-                cbar_created = False
-                
-                # FIXED Animation function with proper variable scoping
-                def animate(frame):
-                    nonlocal cbar_created
-                    
-                    # Clear the axes
-                    ax.clear()
-                    
-                    # Get data for this frame
-                    data = daily_data_list[frame]
-                    date = daily_dates[frame]
-                    
-                    # Plot the data
-                    if variable_name == 'Rainf':
-                        colormap = 'Blues'
-                        unit_label = 'Accumulated Precipitation (kg/m²)'
-                    else:
-                        colormap = 'RdYlBu_r'
-                        unit_label = f'{variable_name} Average'
-                    
-                    # Create the plot
-                    im = ax.pcolormesh(data.lon, data.lat, data.values, 
-                                      cmap=colormap, vmin=vmin, vmax=vmax, shading='auto')
-                    
-                    # Add colorbar only once
-                    if not cbar_created:
-                        cbar = fig.colorbar(im, ax=ax)
-                        cbar.set_label(unit_label, fontsize=16)
-                        cbar_created = True
-                    
-                    # Set title and labels
-                    ax.set_title(f'{region_name} {unit_label}\n{date.strftime("%Y-%m-%d")}', 
-                                fontsize=16, fontweight='bold')
-                    ax.set_xlabel('Longitude', fontsize=16)
-                    ax.set_ylabel('Latitude', fontsize=16)
-                    
-                    return [im]
-                
-                # Create animation with proper parameters
-                try:
-                    anim = animation_module.FuncAnimation(
-                        fig, animate, 
-                        frames=len(daily_data_list), 
-                        interval=1500,  # 1.5 seconds per frame
-                        blit=False,     # Don't use blitting to avoid issues
-                        repeat=True
-                    )
-                    
-                    logging.info(f"✅ Created animation with {len(daily_data_list)} frames")
-                    return anim, fig
-                    
-                except Exception as anim_error:
-                    logging.error(f"❌ Animation creation failed: {anim_error}")
-                    plt.close(fig)
-                    raise Exception(f"Animation creation failed: {str(anim_error)}")
-
-            # NEW: Simple multi-variable animation for temperature + precipitation
-            def create_dual_variable_animation(start_year, start_month, start_day, num_days, lat_min, lat_max, lon_min, lon_max, region_name="Region"):
-                """
-                Create an animation showing both temperature and precipitation for the same region
-                """
-                import matplotlib.animation as animation_module
-                from datetime import datetime, timedelta
-                
-                logging.info(f"🎬 Creating dual-variable animation for {num_days} days")
-                
-                daily_temp_list = []
-                daily_precip_list = []
-                daily_dates = []
-                
-                # Load data for each day
-                for day_offset in range(num_days):
-                    current_date = datetime(start_year, start_month, start_day) + timedelta(days=day_offset)
-                    
-                    try:
-                        logging.info(f"📅 Loading day {day_offset + 1}/{num_days}: {current_date.date()}")
-                        
-                        # Load data for current day
-                        ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 
-                                                          current_date.year, current_date.month, current_date.day)
-                        
-                        # Extract temperature data
-                        temp_data = ds['Tair'].sel(
-                            lat=builtins.slice(lat_min, lat_max),
-                            lon=builtins.slice(lon_min, lon_max)
-                        ).mean(dim='time')
-                        
-                        # Extract precipitation data
-                        precip_data = ds['Rainf'].sel(
-                            lat=builtins.slice(lat_min, lat_max),
-                            lon=builtins.slice(lon_min, lon_max)
-                        ).sum(dim='time')
-                        
-                        daily_temp_list.append(temp_data)
-                        daily_precip_list.append(precip_data)
-                        daily_dates.append(current_date)
-                        
-                        ds.close()
-                        logging.info(f"✅ Loaded {current_date.date()}")
-                        
-                    except Exception as e:
-                        logging.warning(f"⚠️ Failed to load data for {current_date.date()}: {e}")
-                        continue
-                
-                if not daily_temp_list or not daily_precip_list:
-                    raise Exception("No daily data could be loaded for dual animation")
-                
-                # Create figure with 2 subplots
-                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
-                
-                # Calculate color ranges
-                temp_values = []
-                precip_values = []
-                for temp, precip in zip(daily_temp_list, daily_precip_list):
-                    temp_values.extend(temp.values.flatten())
-                    precip_values.extend(precip.values.flatten())
-                
-                temp_vmin, temp_vmax = min(temp_values), max(temp_values)
-                precip_vmin, precip_vmax = min(precip_values), max(precip_values)
-                
-                # Animation function
-                def animate_dual(frame):
-                    # Clear both axes
-                    ax1.clear()
-                    ax2.clear()
-                    
-                    temp_data = daily_temp_list[frame]
-                    precip_data = daily_precip_list[frame]
-                    date = daily_dates[frame]
-                    
-                    # Plot temperature
-                    im1 = ax1.pcolormesh(temp_data.lon, temp_data.lat, temp_data.values, 
-                                        cmap='RdYlBu_r', vmin=temp_vmin, vmax=temp_vmax, shading='auto')
-                    
-                    # Plot precipitation  
-                    im2 = ax2.pcolormesh(precip_data.lon, precip_data.lat, precip_data.values,
-                                        cmap='Blues', vmin=precip_vmin, vmax=precip_vmax, shading='auto')
-                    
-                    # Add titles and labels
-                    ax1.set_title(f'{region_name} Temperature\n{date.strftime("%Y-%m-%d")}', fontsize=16)
-                    ax1.set_xlabel('Longitude', fontsize=16)
-                    ax1.set_ylabel('Latitude', fontsize=16)
-                    
-                    ax2.set_title(f'{region_name} Precipitation\n{date.strftime("%Y-%m-%d")}', fontsize=16)
-                    ax2.set_xlabel('Longitude', fontsize=16)
-                    ax2.set_ylabel('Latitude', fontsize=16)
-                    
-                    # Add colorbars (only on first frame)
-                    if frame == 0:
-                        cbar1 = fig.colorbar(im1, ax=ax1)
-                        cbar1.set_label('Temperature (K)', fontsize=16)
-                        
-                        cbar2 = fig.colorbar(im2, ax=ax2)
-                        cbar2.set_label('Precipitation (kg/m²)', fontsize=16)
-                    
-                    return [im1, im2]
-                
-                # Create animation
-                anim = animation_module.FuncAnimation(
-                    fig, animate_dual,
-                    frames=len(daily_temp_list),
-                    interval=1500,
-                    blit=False,
-                    repeat=True
-                )
-                
-                logging.info(f"✅ Created dual-variable animation with {len(daily_temp_list)} frames")
-                return anim, fig
-
-            # Add both helper functions to execution environment
+            # Add all weather functions to execution environment
             exec_globals.update({
                 'load_specific_date_kerchunk': load_specific_date_kerchunk,
                 'save_plot_to_blob_simple': save_plot_to_blob_simple,
@@ -466,11 +82,8 @@ def execute_custom_code(args: dict):
                 'ACCOUNT_NAME': ACCOUNT_NAME,
                 'account_key': account_key,  # Real account key
                 'VARIABLE_MAPPING': VARIABLE_MAPPING,
-                'load_and_combine_multi_day_data': load_and_combine_multi_day_data,  # For accumulation
-                'load_multi_day_time_series': load_multi_day_time_series,  # NEW: For time series
-                'save_animation_to_blob': save_animation_to_blob,  # NEW: For animations
-                'create_multi_day_animation': create_multi_day_animation,  # NEW: For animations
-                'create_dual_variable_animation': create_dual_variable_animation,  # NEW: For dual-variable animations
+                'process_daily_data': process_daily_data,  # Add the helper function
+                'user_request': user_request  # Make user_request available for dynamic parsing
             })
             
             logging.info(f"Weather functions loaded. ACCOUNT_NAME: {ACCOUNT_NAME}")
@@ -483,45 +96,166 @@ def execute_custom_code(args: dict):
                 "user_request": user_request
             }
         
-        # Import data science libraries
+        # Import data science libraries with proper logging scope
         try:
             import pandas as pd
             import numpy as np
             import xarray as xr
             import matplotlib
             import matplotlib.pyplot as plt
+            import datetime as datetime_module  # Import the module, not just the class
             from datetime import datetime, timedelta
             import io
-            import time  # Add time module
+            import re  # Add regex for date parsing
+            # Note: logging is already imported at module level
+            
+            # Import Cartopy for geographic features with detailed logging
+            try:
+                import cartopy
+                import cartopy.crs as ccrs
+                import cartopy.feature as cfeature
+                cartopy_available = True
+                cartopy_version = cartopy.__version__
+                logging.info(f"✅ Cartopy {cartopy_version} successfully imported")
+                
+                # Try to import shapereader for state labels
+                try:
+                    import cartopy.io.shapereader as shpreader
+                    shapereader_available = True
+                    logging.info("✅ Cartopy shapereader available for state labels")
+                except ImportError:
+                    shapereader_available = False
+                    logging.warning("⚠️ Cartopy shapereader not available - no state labels")
+                
+                # Test basic Cartopy functionality
+                try:
+                    test_crs = ccrs.PlateCarree()
+                    test_feature = cfeature.COASTLINE
+                    logging.info("✅ Cartopy basic functionality test passed")
+                except Exception as cartopy_test_error:
+                    logging.warning(f"⚠️ Cartopy test failed: {cartopy_test_error}")
+                    cartopy_available = False
+                    
+            except ImportError as cartopy_import_error:
+                cartopy_available = False
+                shapereader_available = False
+                logging.warning(f"❌ Cartopy import failed: {cartopy_import_error}")
+                logging.warning("💡 To install Cartopy: pip install cartopy")
+            except Exception as cartopy_error:
+                cartopy_available = False
+                shapereader_available = False
+                logging.error(f"❌ Cartopy error: {cartopy_error}")
+            
+            # Import Azure Storage modules that might be needed
+            try:
+                from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
+                azure_storage_available = True
+            except ImportError:
+                azure_storage_available = False
+                logging.warning("Azure Storage modules not available")
+            
+            # Import PIL for GIF creation
+            try:
+                from PIL import Image
+                pil_available = True
+            except ImportError:
+                pil_available = False
+                logging.warning("PIL not available - GIF creation will be disabled")
             
             # Set matplotlib backend
             matplotlib.use('Agg')
             
-            # GLOBAL FONT SIZE CONFIGURATION - ALL TEXT AT 16PT
+            # 🎯 GLOBAL FONT SIZE CONFIGURATION - ALL TEXT AT 16PT
             plt.rcParams.update({
-                'font.size': 16,          # Base font size
-                'axes.titlesize': 16,     # Title font size
+                'font.size': 16,          # Base font size (affects all text)
+                'axes.titlesize': 18,     # Title font size (slightly larger)
                 'axes.labelsize': 16,     # Axis label font size
                 'xtick.labelsize': 16,    # X-axis tick label size
                 'ytick.labelsize': 16,    # Y-axis tick label size
                 'legend.fontsize': 16,    # Legend font size
-                'figure.titlesize': 16,   # Figure title size
+                'figure.titlesize': 18,   # Figure title size
                 'axes.titlepad': 20,      # Add padding for titles
-                'axes.labelpad': 10       # Add padding for labels
+                'axes.labelpad': 10,      # Add padding for labels
+                'legend.frameon': True,   # Show legend frame
+                'legend.fancybox': True,  # Rounded legend corners
+                'legend.shadow': False,   # No shadow
+                'legend.framealpha': 0.9, # Legend background transparency
+                'grid.alpha': 0.3,        # Grid transparency
+                'lines.linewidth': 2.0,   # Default line width
+                'lines.markersize': 8,    # Default marker size
+                'savefig.dpi': 150,       # High DPI for crisp images
+                'savefig.bbox': 'tight',  # Tight bounding box
+                'savefig.facecolor': 'white',  # White background
+                'figure.facecolor': 'white',   # White figure background
+                'axes.facecolor': 'white',     # White axes background
             })
             
+            logging.info("✅ Global matplotlib font configuration set to 16pt minimum")
+            
+            # CRITICAL: Block animation module to prevent errors
+            # Enable animation support for static frame generation
+            try:
+                import matplotlib.animation as animation_module
+                animation_available = True
+                logging.info("✅ Animation module enabled for static frame generation")
+                
+                # Helper function for creating GIFs from static frames
+                def create_gif_from_frames(frame_images, output_path=None, duration=1000):
+                    """
+                    Create GIF from PIL Image frames
+                    """
+                    if not frame_images or not PIL_AVAILABLE:
+                        return None
+                        
+                    try:
+                        if output_path:
+                            frame_images[0].save(output_path, save_all=True, 
+                                            append_images=frame_images[1:], 
+                                            duration=duration, loop=0, format='GIF')
+                            return output_path
+                        else:
+                            # Return as BytesIO buffer
+                            gif_buffer = io.BytesIO()
+                            frame_images[0].save(gif_buffer, save_all=True, 
+                                            append_images=frame_images[1:], 
+                                            duration=duration, loop=0, format='GIF')
+                            return gif_buffer
+                    except Exception as e:
+                        logging.error(f"GIF creation failed: {e}")
+                        return None
+                
+            except ImportError:
+                animation_available = False
+                animation_module = None
+                def create_gif_from_frames(*args, **kwargs):
+                    return None
+                logging.warning("Animation module not available")   
             exec_globals.update({
                 'pd': pd, 'pandas': pd,
                 'np': np, 'numpy': np,
                 'xr': xr, 'xarray': xr,
                 'plt': plt, 'matplotlib': matplotlib,
-                'datetime': datetime, 'timedelta': timedelta,
+                'datetime': datetime_module,  # Provide the module
+                'timedelta': timedelta,
                 'io': io,
-                'time': time,  # Add time module
-                'logging': logging  # Add logging module
+                'logging': logging,  # Pass the module-level logging
+                'Image': Image if pil_available else None,
+                'PIL_AVAILABLE': pil_available,
+                're': re,  # Add regex module
+                # Cartopy modules
+                'ccrs': ccrs if cartopy_available else None,
+                'cfeature': cfeature if cartopy_available else None,
+                'CARTOPY_AVAILABLE': cartopy_available,
+                'shpreader': shpreader if cartopy_available and shapereader_available else None,
+                'SHAPEREADER_AVAILABLE': shapereader_available if cartopy_available else False,
+                # Azure Storage modules
+                'BlobServiceClient': BlobServiceClient if azure_storage_available else None,
+                'generate_blob_sas': generate_blob_sas if azure_storage_available else None,
+                'BlobSasPermissions': BlobSasPermissions if azure_storage_available else None,
+                'AZURE_STORAGE_AVAILABLE': azure_storage_available
             })
             
-            logging.info("Libraries loaded successfully with 16pt font configuration")
+            logging.info(f"Libraries loaded successfully. PIL: {pil_available}, Azure Storage: {azure_storage_available}, Cartopy: {cartopy_available}, ShapeReader: {shapereader_available if cartopy_available else False}")
             
         except Exception as e:
             logging.error(f"Failed to import libraries: {e}")
@@ -534,30 +268,92 @@ def execute_custom_code(args: dict):
         # Execute the code
         try:
             exec_locals = {}
+            
+            # Log the actual code being executed to debug import issues
+            logging.info("=== PYTHON CODE BEING EXECUTED ===")
+            logging.info(python_code)
+            logging.info("=== END OF PYTHON CODE ===")
+            
+            # CRITICAL: Validate code before execution to prevent bad imports
+            forbidden_patterns = [
+                'import some_module',
+                'from some_module',
+                'import unknown',
+                'from unknown',
+                'import matplotlib.animation',
+                'from matplotlib.animation',
+                # REMOVED: 'import PIL' and 'from PIL import Image' - these should be allowed since Image is pre-loaded
+                'from PIL import',        # Block other PIL imports but allow 'from PIL import Image'
+                'import azure.storage.blob',
+                'from azure.storage.blob import BlobServiceClient',
+                'from azure.storage.blob import generate_blob_sas',
+                'from azure.storage.blob import BlobSasPermissions',
+                'from azure.storage.blob import',
+                'from azure.storage.blob',
+                'azure.storage.blob import BlobServiceClient',
+                'azure.storage.blob import generate_blob_sas',
+                'azure.storage.blob import BlobSasPermissions',
+                'BlobServiceClient, generate_blob_sas',
+                'generate_blob_sas, BlobSasPermissions'
+            ]
+            
+            # Check for forbidden patterns with better error handling
+            try:
+                python_code_lower = python_code.lower()
+                for pattern in forbidden_patterns:
+                    if pattern.lower() in python_code_lower:
+                        # UPDATED: Allow specific PIL imports
+                        if pattern == 'from PIL import' and 'from PIL import Image' in python_code:
+                            continue  # Allow this specific case
+                        
+                        # Provide specific guidance for different error types
+                        if 'animation' in pattern:
+                            error_msg = (f"Animation creation error: '{pattern}' is forbidden. "
+                                       f"matplotlib.animation is blocked - create individual frames and combine with PIL using pre-loaded modules.")
+                        elif 'azure.storage.blob' in pattern or 'blobserviceclient' in pattern.lower():
+                            error_msg = (f"Azure Storage import error: '{pattern}' is STRICTLY FORBIDDEN. "
+                                       f"NEVER import Azure modules. Use pre-loaded variables: BlobServiceClient, generate_blob_sas, BlobSasPermissions. "
+                                       f"Check AZURE_STORAGE_AVAILABLE first. "
+                                       f"Example: if AZURE_STORAGE_AVAILABLE: blob_client = BlobServiceClient(...)")
+                        else:
+                            error_msg = f"Forbidden import pattern detected: '{pattern}'. Use pre-loaded modules instead."
+                        
+                        logging.error(f"Code validation failed: {error_msg}")
+                        
+                        # Also log the actual problematic line
+                        for line_num, line in enumerate(python_code.split('\n'), 1):
+                            if pattern.lower() in line.lower():
+                                logging.error(f"Problematic line {line_num}: {line}")
+                        
+                        return {
+                            "status": "error",
+                            "error": error_msg,
+                            "python_code": python_code[:500],
+                            "user_request": user_request,
+                            "validation_failed": True,
+                            "suggestion": "Remove ALL import statements. Use pre-loaded variables directly: BlobServiceClient, generate_blob_sas, BlobSasPermissions"
+                        }
+                
+                # Additional validation: check for suspicious import lines (WARNING ONLY)
+                import_lines = [line.strip() for line in python_code.split('\n') if line.strip().startswith(('import ', 'from '))]
+                allowed_imports = ['import builtins', 'import re', 'from datetime import']
+                
+                for import_line in import_lines:
+                    if not any(allowed in import_line for allowed in allowed_imports):
+                        # Only log as warning, don't block execution
+                        if not any(blocked in import_line.lower() for blocked in ['matplotlib.animation', 'from pil import', 'azure.storage.blob']):
+                            logging.info(f"INFO: Pre-loaded import detected: {import_line}")
+                        else:
+                            logging.warning(f"Suspicious import detected: {import_line}")
+                
+            except Exception as validation_error:
+                logging.error(f"Code validation error: {validation_error}")
+                # Continue with execution if validation fails
+            
             exec(python_code, exec_globals, exec_locals)
             
-            # Get result and ensure it's JSON serializable
+            # Get result
             result = exec_locals.get('result', 'No result variable found')
-            
-            # Convert numpy arrays and other non-serializable types
-            def make_serializable(obj):
-                if isinstance(obj, np.ndarray):
-                    return obj.tolist()
-                elif isinstance(obj, np.integer):
-                    return int(obj)
-                elif isinstance(obj, np.floating):
-                    return float(obj)
-                elif isinstance(obj, np.bool_):
-                    return bool(obj)
-                elif isinstance(obj, dict):
-                    return {k: make_serializable(v) for k, v in obj.items()}
-                elif isinstance(obj, (list, tuple)):
-                    return [make_serializable(item) for item in obj]
-                else:
-                    return obj
-            
-            # Make result JSON serializable
-            result = make_serializable(result)
             
             logging.info(f"Code executed successfully. Result type: {type(result)}")
             if isinstance(result, (int, float, str, dict, list)):

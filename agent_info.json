@@ -2,16 +2,16 @@
   "project_endpoint": "https://nldas-test-resource.services.ai.azure.com/api/projects/nldas-test",
   "agents": {
     "text": {
-      "id": "asst_RE66P72yEhxIdbwaIPmEua98",
-      "name": "nldas3-text-agent",
+      "id": "asst_iM1MblFtN3W0yfvcuVV8BJ3s",
+      "name": "nldas3-static-frame-animation-agent",
       "model": "gpt-4o",
       "capabilities": [
-        "grounded-qa",
-        "metadata-lookup",
-        "explanations",
-        "weather-data-retrieval",
-        "conditional-visualization",
-        "dynamic-code-execution"
+        "direct-code-execution",
+        "subplot-creation",
+        "proper-colorbar-scaling",
+        "map-generation",
+        "formatted-time-series",
+        "static-frame-animations"
       ],
       "tools": [
         {
@@ -22,18 +22,13 @@
         },
         {
           "type": "function",
-          "name": "get_weather_data",
-          "description": "NLDAS-3 weather data retrieval function with conditional visualization"
-        },
-        {
-          "type": "function",
           "name": "execute_custom_code",
-          "description": "Dynamic Python code execution for complex NLDAS-3 analysis"
+          "description": "Execute custom Python code for NLDAS-3 analysis with static frame animation support"
         }
       ]
     },
     "visualization": {
-      "id": "asst_3I8wDHK6rNgl9U5DhDs9mlqL",
+      "id": "asst_7h6Hvew9Dh5yRQYi71rAdCES",
       "name": "nldas3-visualization-agent",
       "model": "gpt-4o",
       "capabilities": [

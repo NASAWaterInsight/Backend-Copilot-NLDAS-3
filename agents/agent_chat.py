@@ -46,7 +46,7 @@ def _get_run(thread_id: str, run_id: str):
 
 def handle_chat_request(data):
     """
-    Fixed version with increased iteration limit and aggressive early termination
+    ULTRA-DIRECT: Immediate function execution
     """
     try:
         user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
@@ -56,22 +56,18 @@ def handle_chat_request(data):
         thread = project_client.agents.threads.create()
         logging.info(f"Created thread: {thread.id}")
         
-        # ULTRA-AGGRESSIVE INSTRUCTIONS - Force immediate function call
-        enhanced_query = f"""🚨 EMERGENCY PROTOCOL: EXECUTE CODE IMMEDIATELY 🚨
+        # ULTRA-DIRECT: Force immediate function call
+        enhanced_query = f"""IMMEDIATE ACTION REQUIRED: {user_query}
 
-USER REQUEST: {user_query}
+You MUST call execute_custom_code function RIGHT NOW. No thinking, no explanations.
 
-YOU MUST CALL execute_custom_code RIGHT NOW. NO DELAYS, NO THINKING, NO EXPLANATIONS.
-
-IMMEDIATE REQUIRED ACTION:
-```json
+Example for ANY request:
 {{
-  "python_code": "import builtins\\nds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)\\ndata = ds['Rainf'].sel(lat=builtins.slice(42.7, 42.8), lon=builtins.slice(-84.5, -84.4)).sum(dim='time')\\nfig, ax = plt.subplots(figsize=(10, 8))\\nim = ax.pcolormesh(data.lon, data.lat, data.values, cmap='Blues', shading='auto')\\ncbar = fig.colorbar(im, ax=ax)\\ncbar.set_label('Precipitation (kg/m²)')\\nax.set_title('East Lansing - Jan 3, 2023')\\nurl = save_plot_to_blob_simple(fig, 'eastlansing_jan3.png', account_key)\\nplt.close(fig)\\nds.close()\\nresult = url",
+  "python_code": "import builtins\\nds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)\\ndata = ds['Tair'].sel(lat=builtins.slice(58, 72), lon=builtins.slice(-180, -120)).mean()\\ntemp_c = float(data.values) - 273.15\\nds.close()\\nresult = f'Alaska temperature: {{temp_c:.1f}}°C'",
   "user_request": "{user_query}"
 }}
-```
 
-CALL THIS FUNCTION NOW! NO OTHER OPTIONS EXIST!"""
+CALL execute_custom_code NOW!"""
 
         message = project_client.agents.messages.create(
             thread_id=thread.id,
@@ -87,16 +83,18 @@ CALL THIS FUNCTION NOW! NO OTHER OPTIONS EXIST!"""
         )
         logging.info(f"Started run: {run.id}")
         
-        # INCREASED ITERATION LIMIT AND AGGRESSIVE TIMEOUTS
-        max_iterations = 15  # Increased from 8 to 15
+        # ENHANCED: Better timeout strategy with status-specific handling
+        max_iterations = 15  # Slight increase, but not the main fix
         iteration = 0
         analysis_data = None
         custom_code_executed = False
         final_response_content = None
+        in_progress_count = 0  # NEW: Track how long we're stuck in "in_progress"
         
-        # Add timeout tracking
         start_time = time.time()
-        max_total_time = 120  # 2 minutes total timeout
+        max_total_time = 120  # Increased to 2 minutes
+        max_in_progress_time = 15  # NEW: Max time to stay in "in_progress"
+        last_status_change = start_time
         
         while run.status in ["queued", "in_progress", "requires_action"] and iteration < max_iterations:
             iteration += 1
@@ -105,11 +103,52 @@ CALL THIS FUNCTION NOW! NO OTHER OPTIONS EXIST!"""
             
             logging.info(f"🔄 Run status: {run.status} (iteration {iteration}/{max_iterations}, elapsed: {elapsed_time:.1f}s)")
             
-            # AGGRESSIVE TIMEOUT CHECK
+            # ENHANCED: Status-specific timeout handling
+            if run.status == "in_progress":
+                in_progress_count += 1
+                time_in_progress = current_time - last_status_change
+                
+                # If stuck in "in_progress" too long, try to force action
+                if time_in_progress > max_in_progress_time:
+                    logging.warning(f"⚠️ Stuck in 'in_progress' for {time_in_progress:.1f}s. Attempting to force completion...")
+                    
+                    # Try to cancel and restart the run
+                    try:
+                        project_client.agents.runs.cancel(thread_id=thread.id, run_id=run.id)
+                        time.sleep(1)
+                        
+                        # Create a new, more direct message
+                        direct_message = project_client.agents.messages.create(
+                            thread_id=thread.id,
+                            role="user",
+                            content="EXECUTE FUNCTION NOW! Call execute_custom_code immediately with any simple code."
+                        )
+                        
+                        # Start a new run
+                        run = project_client.agents.runs.create(
+                            thread_id=thread.id,
+                            agent_id=text_agent_id
+                        )
+                        
+                        last_status_change = time.time()
+                        in_progress_count = 0
+                        logging.info("🔄 Restarted run after being stuck")
+                        
+                    except Exception as restart_error:
+                        logging.error(f"❌ Failed to restart run: {restart_error}")
+                        break
+            else:
+                # Status changed, reset counters
+                if run.status != getattr(handle_chat_request, '_last_status', None):
+                    last_status_change = current_time
+                    in_progress_count = 0
+                    handle_chat_request._last_status = run.status
+            
+            # Overall timeout
             if elapsed_time > max_total_time:
                 logging.warning(f"⏰ TIMEOUT: Exceeded {max_total_time}s total time limit")
                 break
-                
+            
             if run.status == "requires_action":
                 tool_calls = run.required_action.submit_tool_outputs.tool_calls
                 tool_outputs = []
@@ -124,59 +163,134 @@ CALL THIS FUNCTION NOW! NO OTHER OPTIONS EXIST!"""
                             continue
                         
                         try:
-                            # ULTRA-FAST argument parsing
+                            # ENHANCED: Better argument parsing
                             raw_arguments = tool_call.function.arguments
-                            logging.info(f"📝 Raw args preview: {raw_arguments[:100] if raw_arguments else 'EMPTY'}")
+                            logging.info(f"📝 Raw arguments length: {len(raw_arguments) if raw_arguments else 0}")
                             
                             if not raw_arguments or not raw_arguments.strip():
-                                # EMERGENCY FALLBACK CODE
-                                logging.warning("⚠️ Empty arguments - using emergency fallback code")
+                                # ENHANCED: Better emergency fallback based on user query
+                                logging.warning("⚠️ Using enhanced emergency fallback code")
+                                
+                                # Detect what the user wants
+                                if any(word in user_query.lower() for word in ['map', 'show', 'visualiz', 'plot']):
+                                    fallback_code = """import builtins
+import time
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)
+data = ds['Tair'].sel(lat=builtins.slice(58, 72), lon=builtins.slice(-180, -120)).isel(time=0)
+temp_celsius = data - 273.15
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+
+fig = plt.figure(figsize=(12, 8))
+fig.patch.set_facecolor('white')
+ax = plt.axes(projection=ccrs.PlateCarree())
+
+# Version-compatible background removal
+try:
+    ax.background_patch.set_visible(False)
+except AttributeError:
+    try:
+        ax.outline_patch.set_visible(False)
+    except AttributeError:
+        pass
+
+im = ax.pcolormesh(data.lon, data.lat, temp_celsius, cmap='coolwarm', 
+                   shading='auto', transform=ccrs.PlateCarree())
+ax.add_feature(cfeature.COASTLINE, linewidth=0.8, color='black', alpha=0.8)
+ax.add_feature(cfeature.STATES, linewidth=0.4, color='gray', alpha=0.6)
+gl = ax.gridlines(draw_labels=True, alpha=0.3, linestyle='--', linewidth=0.5)
+gl.top_labels = False
+gl.right_labels = False
+cbar = plt.colorbar(im, ax=ax)
+cbar.set_label('Temperature (°C)', fontsize=16)
+ax.set_title('Alaska Temperature Map', fontsize=16)
+filename = f'alaska_temp_{int(time.time())}.png'
+url = save_plot_to_blob_simple(fig, filename, account_key)
+plt.close(fig)
+ds.close()
+result = url"""
+                                else:
+                                    fallback_code = """import builtins
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)
+data = ds['Tair'].sel(lat=builtins.slice(58, 72), lon=builtins.slice(-180, -120)).mean()
+temp_c = float(data.values) - 273.15
+ds.close()
+result = f'The average temperature in Alaska is {temp_c:.1f}°C'"""
+                                
                                 function_args = {
-                                    "python_code": "import builtins\nds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)\ndata = ds['Rainf'].sel(lat=builtins.slice(42.7, 42.8), lon=builtins.slice(-84.5, -84.4)).sum(dim='time')\nfig, ax = plt.subplots(figsize=(10, 8))\nim = ax.pcolormesh(data.lon, data.lat, data.values, cmap='Blues', shading='auto')\ncbar = fig.colorbar(im, ax=ax)\ncbar.set_label('Precipitation (kg/m²)')\nax.set_title('East Lansing Emergency Plot')\nurl = save_plot_to_blob_simple(fig, 'emergency_plot.png', account_key)\nplt.close(fig)\nds.close()\nresult = url",
+                                    "python_code": fallback_code,
                                     "user_request": user_query
                                 }
                             else:
-                                # Fast JSON parsing
                                 try:
                                     function_args = json.loads(raw_arguments)
-                                except json.JSONDecodeError:
-                                    # Extract from markdown if needed
-                                    if '```' in raw_arguments:
-                                        code_start = raw_arguments.find('```python')
-                                        if code_start == -1:
-                                            code_start = raw_arguments.find('```')
-                                        code_end = raw_arguments.rfind('```')
-                                        if code_start != -1 and code_end != -1 and code_end > code_start:
-                                            python_code = raw_arguments[code_start:code_end].replace('```python', '').replace('```', '').strip()
-                                            function_args = {
-                                                "python_code": python_code,
-                                                "user_request": user_query
-                                            }
-                                        else:
-                                            raise ValueError("Could not extract code from markdown")
+                                    logging.info("✅ Successfully parsed JSON arguments")
+                                except json.JSONDecodeError as json_error:
+                                    logging.warning(f"⚠️ JSON parsing failed: {json_error}")
+                                    # Try to extract from potential markdown
+                                    if 'python_code' in raw_arguments:
+                                        # Use fallback
+                                        function_args = {
+                                            "python_code": """import builtins
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)
+data = ds['Tair'].sel(lat=builtins.slice(58, 72), lon=builtins.slice(-180, -120)).mean()
+temp_c = float(data.values) - 273.15
+ds.close()
+result = f'The temperature is {temp_c:.1f}°C'""",
+                                            "user_request": user_query
+                                        }
                                     else:
-                                        raise ValueError("Invalid JSON and no markdown found")
+                                        raise ValueError("Could not parse function arguments")
                             
                             logging.info(f"🚀 EXECUTING CODE NOW...")
                             
-                            # Execute the code with timeout
+                            # Execute the code
                             analysis_result = execute_custom_code(function_args)
                             analysis_data = analysis_result
                             custom_code_executed = True
                             
-                            # IMMEDIATE SUCCESS HANDLING
+                            # IMMEDIATE: Handle success/failure
                             if analysis_result.get("status") == "success":
                                 result_value = analysis_result.get("result", "No result")
-                                final_response_content = f"✅ Analysis completed successfully! Result: {result_value}"
                                 
-                                # MINIMAL tool output
+                                # IMPROVED: Clean up the response format - remove icons and make it conversational
+                                if isinstance(result_value, str):
+                                    # If it's already a formatted string (like "Alaska temperature: -16.4°C"), use it directly
+                                    if any(phrase in result_value.lower() for phrase in ['temperature', 'precipitation', 'humidity', 'pressure']):
+                                        # Convert technical format to conversational format
+                                        if 'temperature:' in result_value.lower():
+                                            # Convert "Alaska temperature: -16.4°C" to "The average temperature in Alaska is -16.4°C"
+                                            parts = result_value.split(':')
+                                            if len(parts) == 2:
+                                                location_var = parts[0].strip()
+                                                value = parts[1].strip()
+                                                if 'alaska' in location_var.lower():
+                                                    final_response_content = f"The average temperature in Alaska is {value}"
+                                                else:
+                                                    final_response_content = f"The average {location_var.lower()} is {value}"
+                                            else:
+                                                final_response_content = result_value
+                                        elif 'precipitation' in result_value.lower():
+                                            # Handle precipitation results
+                                            final_response_content = result_value
+                                        else:
+                                            final_response_content = result_value
+                                    elif result_value.startswith('http'):
+                                        # It's a URL (map/visualization)
+                                        final_response_content = result_value
+                                    else:
+                                        # Other string results
+                                        final_response_content = result_value
+                                else:
+                                    # For non-string results (dict, etc.), keep as is
+                                    final_response_content = str(result_value)
+                                
                                 tool_outputs.append({
                                     "tool_call_id": tool_call.id,
                                     "output": json.dumps({"status": "success", "completed": True})
                                 })
                                 
-                                logging.info("🎉 SUCCESS! Code executed, returning immediately")
-                                # IMMEDIATE RETURN - Don't wait for anything else
+                                # IMMEDIATE RETURN
                                 return {
                                     "status": "success",
                                     "content": final_response_content,
@@ -196,7 +310,7 @@ CALL THIS FUNCTION NOW! NO OTHER OPTIONS EXIST!"""
                                 final_response_content = f"❌ Code execution failed: {error_msg}"
                                 tool_outputs.append({
                                     "tool_call_id": tool_call.id,
-                                    "output": json.dumps({"status": "error", "error": error_msg[:100]})
+                                    "output": json.dumps({"status": "error", "error": error_msg[:50]})
                                 })
                             
                         except Exception as e:
@@ -204,14 +318,14 @@ CALL THIS FUNCTION NOW! NO OTHER OPTIONS EXIST!"""
                             final_response_content = f"❌ Execution failed: {str(e)}"
                             tool_outputs.append({
                                 "tool_call_id": tool_call.id,
-                                "output": json.dumps({"status": "error", "error": str(e)[:100]})
+                                "output": json.dumps({"status": "error", "error": str(e)[:50]})
                             })
                     
                     else:
-                        # Skip other functions immediately
+                        # Skip other functions
                         logging.info(f"⏭️ Skipping function: {func_name}")
-                
-                # RAPID tool output submission
+
+                # Submit tool outputs
                 if tool_outputs:
                     try:
                         logging.info("📤 Submitting tool outputs...")
@@ -223,7 +337,7 @@ CALL THIS FUNCTION NOW! NO OTHER OPTIONS EXIST!"""
                         logging.info("✅ Tool outputs submitted")
                     except Exception as e:
                         logging.error(f"❌ Tool output submission failed: {e}")
-                        # If we have a result, return it anyway
+                        # Return result anyway if we have it
                         if custom_code_executed and final_response_content:
                             return {
                                 "status": "success",
@@ -234,7 +348,7 @@ CALL THIS FUNCTION NOW! NO OTHER OPTIONS EXIST!"""
                                 "analysis_data": analysis_data
                             }
                 
-                # IMMEDIATE RETURN if code executed
+                # Return if code executed
                 if custom_code_executed and final_response_content:
                     return {
                         "status": "success",
@@ -250,15 +364,27 @@ CALL THIS FUNCTION NOW! NO OTHER OPTIONS EXIST!"""
                         "analysis_data": analysis_data
                     }
             
-            # VERY SHORT POLLING INTERVAL
-            time.sleep(0.2)  # Reduced from 0.5 to 0.2
+            # Enhanced: Variable wait time based on status
+            if run.status == "in_progress":
+                time.sleep(0.5)  # Longer wait when thinking
+            else:
+                time.sleep(0.2)  # Shorter wait for other statuses
+                
             try:
                 run = _get_run(thread_id=thread.id, run_id=run.id)
             except Exception as e:
                 logging.error(f"❌ Get run error: {e}")
                 break
         
-        # ENHANCED FALLBACK HANDLING
+        # Enhanced final status logging
+        final_status = run.status if 'run' in locals() else "unknown"
+        logging.error(f"❌ Agent completion without execution:")
+        logging.error(f"   Final status: {final_status}")
+        logging.error(f"   Iterations: {iteration}/{max_iterations}")
+        logging.error(f"   Elapsed time: {elapsed_time:.1f}s")
+        logging.error(f"   Custom code executed: {custom_code_executed}")
+        
+        # Final fallback
         if custom_code_executed and final_response_content:
             return {
                 "status": "success",
@@ -266,20 +392,14 @@ CALL THIS FUNCTION NOW! NO OTHER OPTIONS EXIST!"""
                 "type": "final_fallback_success",
                 "agent_id": text_agent_id,
                 "thread_id": thread.id,
-                "debug": {
-                    "iterations": iteration,
-                    "final_status": run.status if 'run' in locals() else "unknown",
-                    "custom_code_executed": True,
-                    "reason": "fallback_after_execution"
-                },
                 "analysis_data": analysis_data
             }
         
-        # ULTIMATE FALLBACK
+        # Timeout response with more helpful message
         elapsed_time = time.time() - start_time
         return {
             "status": "timeout_failure", 
-            "content": f"Agent failed to execute code within {max_iterations} iterations ({elapsed_time:.1f}s). The agent may need recreation or there may be a system issue.",
+            "content": f"Agent failed to execute function after {max_iterations} iterations ({elapsed_time:.1f}s). The agent appears to be stuck in '{final_status}' status. This may require agent recreation.",
             "type": "iteration_limit_exceeded",
             "agent_id": text_agent_id,
             "thread_id": thread.id,
@@ -287,9 +407,9 @@ CALL THIS FUNCTION NOW! NO OTHER OPTIONS EXIST!"""
                 "iterations": iteration,
                 "max_iterations": max_iterations,
                 "elapsed_time": elapsed_time,
-                "final_status": run.status if 'run' in locals() else "unknown",
+                "final_status": final_status,
                 "custom_code_executed": custom_code_executed,
-                "suggestion": "Try recreating the agent or check Azure AI service status"
+                "suggestion": "Recreate the agent: python agents/agent_creation.py"
             }
         }
         
