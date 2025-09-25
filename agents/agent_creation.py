@@ -87,6 +87,8 @@ text_tool_resources = ai_search_tool.resources if ai_search_tool else None
 # ---------- ULTRA-SIMPLE INSTRUCTIONS WITH PROPER COLORBAR SCALING AND TIME SERIES FORMATTING ----------
 instructions = """MANDATORY: Call execute_custom_code immediately.
 
+🚨 CRITICAL: Use ccrs.PlateCarree() object, NEVER use 'platecarree' string for projections.
+
 CRITICAL: ONLY use these exact function names (no others exist):
 - load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
 - create_multi_day_animation(year, month, day, num_days, 'Tair', lat_min, lat_max, lon_min, lon_max, 'Region')
@@ -177,97 +179,41 @@ plt.close()
 result = url
 ```
 
-FOR SUBPLOT REQUESTS (multiple variables or dates) - copy this pattern with SHARED COLOR SCALES:
+FOR SUBPLOT REQUESTS (multiple variables or dates) - copy this pattern:
 ```python
 import builtins
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 1)
+temp_data = ds['Tair'].sel(lat=builtins.slice(37.9, 39.7), lon=builtins.slice(-79.5, -75.0)) - 273.15
 
-# Florida coordinates (adjust for your region)
-lat_min, lat_max = 24.5, 31.0
-lon_min, lon_max = -87.6, -80.0
+avg_temp = temp_data.mean(dim='time')
+min_temp = temp_data.min(dim='time') 
+max_temp = temp_data.max(dim='time')
 
-# Load data for both dates
-ds1, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 10)
-ds2, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 2, 10)
+shared_vmin, shared_vmax = float(min(avg_temp.min(), min_temp.min(), max_temp.min())), float(max(avg_temp.max(), min_temp.max(), max_temp.max()))
 
-# Extract precipitation (sum) and temperature (average, convert to Celsius)
-precip_jan = ds1['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).sum(dim='time')
-temp_jan = ds1['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).mean(dim='time') - 273.15
+fig = plt.figure(figsize=(20, 6))
+ax1 = fig.add_subplot(1, 3, 1, projection=ccrs.PlateCarree())
+ax2 = fig.add_subplot(1, 3, 2, projection=ccrs.PlateCarree())
+ax3 = fig.add_subplot(1, 3, 3, projection=ccrs.PlateCarree())
 
-precip_feb = ds2['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).sum(dim='time')
-temp_feb = ds2['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).mean(dim='time') - 273.15
+for ax in [ax1, ax2, ax3]:
+    ax.add_feature(cfeature.COASTLINE)
+    ax.add_feature(cfeature.STATES)
 
-# CRITICAL: Calculate shared color scales for proper comparison
-precip_min = min(float(precip_jan.min()), float(precip_feb.min()))
-precip_max = max(float(precip_jan.max()), float(precip_feb.max()))
-temp_min = min(float(temp_jan.min()), float(temp_feb.min()))
-temp_max = max(float(temp_jan.max()), float(temp_feb.max()))
+im1 = ax1.pcolormesh(avg_temp.lon, avg_temp.lat, avg_temp.values, cmap='RdYlBu_r', vmin=shared_vmin, vmax=shared_vmax, shading='auto', transform=ccrs.PlateCarree())
+ax1.set_title('Average Temperature')
 
-# Create 2x2 subplots with Cartopy projections
-fig = plt.figure(figsize=(20, 16))
-fig.patch.set_facecolor('white')
+im2 = ax2.pcolormesh(min_temp.lon, min_temp.lat, min_temp.values, cmap='RdYlBu_r', vmin=shared_vmin, vmax=shared_vmax, shading='auto', transform=ccrs.PlateCarree())
+ax2.set_title('Minimum Temperature')
 
-ax1 = fig.add_subplot(2, 2, 1, projection=ccrs.PlateCarree())
-ax2 = fig.add_subplot(2, 2, 2, projection=ccrs.PlateCarree())
-ax3 = fig.add_subplot(2, 2, 3, projection=ccrs.PlateCarree())
-ax4 = fig.add_subplot(2, 2, 4, projection=ccrs.PlateCarree())
+im3 = ax3.pcolormesh(max_temp.lon, max_temp.lat, max_temp.values, cmap='RdYlBu_r', vmin=shared_vmin, vmax=shared_vmax, shading='auto', transform=ccrs.PlateCarree())
+ax3.set_title('Maximum Temperature')
 
-axes = [ax1, ax2, ax3, ax4]
-
-# Remove backgrounds
-for ax in axes:
-    try:
-        ax.background_patch.set_visible(False)
-    except AttributeError:
-        try:
-            ax.outline_patch.set_visible(False)
-        except AttributeError:
-            pass
-
-# Plot data WITH SHARED SCALES (vmin/vmax for comparison)
-im1 = ax1.pcolormesh(precip_jan.lon, precip_jan.lat, precip_jan.values, 
-                     cmap='Blues', shading='auto', transform=ccrs.PlateCarree(),
-                     vmin=precip_min, vmax=precip_max)
-
-im2 = ax2.pcolormesh(temp_jan.lon, temp_jan.lat, temp_jan.values, 
-                     cmap='RdYlBu_r', shading='auto', transform=ccrs.PlateCarree(),
-                     vmin=temp_min, vmax=temp_max)
-
-im3 = ax3.pcolormesh(precip_feb.lon, precip_feb.lat, precip_feb.values, 
-                     cmap='Blues', shading='auto', transform=ccrs.PlateCarree(),
-                     vmin=precip_min, vmax=precip_max)
-
-im4 = ax4.pcolormesh(temp_feb.lon, temp_feb.lat, temp_feb.values, 
-                     cmap='RdYlBu_r', shading='auto', transform=ccrs.PlateCarree(),
-                     vmin=temp_min, vmax=temp_max)
-
-# Add features to all subplots
-for ax in axes:
-    ax.add_feature(cfeature.COASTLINE, linewidth=0.8, edgecolor='black', facecolor='none', alpha=0.7)
-    ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor='gray', facecolor='none', alpha=0.6)
-    gl = ax.gridlines(draw_labels=True, alpha=0.3)
-    gl.top_labels = False
-    gl.right_labels = False
-
-# Titles with shared ranges for context
-ax1.set_title(f'Precipitation - Jan 10\\n(Scale: {precip_min:.1f}-{precip_max:.1f} mm)', fontsize=16)
-ax2.set_title(f'Temperature - Jan 10\\n(Scale: {temp_min:.1f}-{temp_max:.1f} °C)', fontsize=16)
-ax3.set_title(f'Precipitation - Feb 10\\n(Scale: {precip_min:.1f}-{precip_max:.1f} mm)', fontsize=16)
-ax4.set_title(f'Temperature - Feb 10\\n(Scale: {temp_min:.1f}-{temp_max:.1f} °C)', fontsize=16)
-
-# SHARED colorbars (one per variable type for clean comparison)
-cbar1 = fig.colorbar(im1, ax=[ax1, ax3], shrink=0.8, aspect=30, pad=0.02)
-cbar1.set_label('Precipitation (mm)', fontsize=16)
-
-cbar2 = fig.colorbar(im2, ax=[ax2, ax4], shrink=0.8, aspect=30, pad=0.02)
-cbar2.set_label('Temperature (°C)', fontsize=16)
-
-plt.tight_layout()
-url = save_plot_to_blob_simple(fig, 'subplots_shared_scales.png', account_key)
+plt.subplots_adjust(left=0.05, right=0.85, wspace=0.1)
+plt.colorbar(im3, ax=[ax1, ax2, ax3], shrink=0.8, pad=0.02, label='Temperature (°C)')
+url = save_plot_to_blob_simple(fig, 'subplot.png', account_key)
 plt.close(fig)
-ds1.close()
-ds2.close()
+ds.close()
 result = url
 ```
 
