@@ -319,7 +319,7 @@ def execute_custom_code(args: dict):
                         colormap = 'Blues'
                         unit_label = 'Accumulated Precipitation (mm)'
                     else:
-                        colormap = 'RdYlBu_r'
+                        colormap = 'coolwarm'
                         if variable_name == 'Tair':
                             unit_label = f'Temperature (°C)'
                         else:
@@ -466,7 +466,7 @@ def execute_custom_code(args: dict):
                     
                     # FIXED: Plot with Cartopy transforms
                     im1 = ax1.pcolormesh(temp_data.lon, temp_data.lat, temp_data.values, 
-                                        cmap='RdYlBu_r', vmin=temp_vmin, vmax=temp_vmax, 
+                                        cmap='coolwarm', vmin=temp_vmin, vmax=temp_vmax, 
                                         shading='auto', transform=ccrs.PlateCarree())
                     
                     im2 = ax2.pcolormesh(precip_data.lon, precip_data.lat, precip_data.values,

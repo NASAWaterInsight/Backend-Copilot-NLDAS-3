@@ -199,6 +199,7 @@ ax3 = fig.add_subplot(1, 3, 3, projection=ccrs.PlateCarree())
 for ax in [ax1, ax2, ax3]:
     ax.add_feature(cfeature.COASTLINE)
     ax.add_feature(cfeature.STATES)
+    gl = ax.gridlines(draw_labels=True, alpha=0.3)
 
 im1 = ax1.pcolormesh(avg_temp.lon, avg_temp.lat, avg_temp.values, cmap='RdYlBu_r', vmin=shared_vmin, vmax=shared_vmax, shading='auto', transform=ccrs.PlateCarree())
 ax1.set_title('Average Temperature')
