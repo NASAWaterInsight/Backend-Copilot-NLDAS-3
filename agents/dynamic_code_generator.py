@@ -782,7 +782,7 @@ def execute_custom_code(args: dict):
                     # Fallback to regular map
                     return create_cartopy_map(lon_data, lat_data, data_values, title, colorbar_label, cmap, figsize)
 
-            def create_cartopy_map(lon_data, lat_data, data_values, title, colorbar_label, cmap='viridis', figsize=(12, 8)):
+            def create_cartopy_map(lon_data, lat_data, data_values, title, colorbar_label, cmap='viridis', figsize=(12, 8), region_name=None, show_cities=False):
                 """
                 Create a proper Cartopy map with geographic features
                 FIXED: Now includes background removal to prevent gray areas
@@ -835,6 +835,15 @@ def execute_custom_code(args: dict):
                                     crs=ccrs.PlateCarree())
                     except:
                         pass
+                    
+                    # AFTER features & before return, inject labels if requested
+                    if (show_cities or region_name) and 'add_city_labels_for_region' in globals():
+                        try:
+                            extent = [float(lon_data.min()), float(lon_data.max()),
+                                      float(lat_data.min()), float(lat_data.max())]
+                            add_city_labels_for_region(ax, extent, region_name)
+                        except Exception as label_err:
+                            logging.warning(f"City labeling skipped: {label_err}")
                     
                     logging.info("✅ Created Cartopy map with geographic features (no gray areas)")
                     return fig, ax

@@ -272,6 +272,22 @@ except Exception as e:
     result = f"Animation failed, showing static map: {url}"
 ```
 
+OPTIONAL CITY LABELS (no gray fill):
+To include city names on a map add: region_name='Florida' (or 'Maryland','California','Michigan','Alaska') and show_cities=True
+Example:
+```python
+import builtins
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 9, 30)
+data = ds['Tair'].sel(lat=builtins.slice(37.9, 39.7), lon=builtins.slice(-79.5, -75.0)).mean(dim='time') - 273.15
+fig, ax = create_cartopy_map(data.lon, data.lat, data.values,
+                             'Maryland Temperature with Cities',
+                             'Temperature (°C)', 'RdYlBu_r',
+                             region_name='maryland', show_cities=True)
+url = save_plot_to_blob_simple(fig, 'maryland_temp_cities.png', account_key)
+plt.close(fig); ds.close(); result = url
+```
+If user explicitly asks for city names or labels, use show_cities=True.
+
 ALWAYS set 'result' variable. Use exact patterns above."""
 
 # ---------- Create text agent with proper colorbar scaling and time series formatting ----------
