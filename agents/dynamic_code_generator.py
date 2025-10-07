@@ -450,7 +450,7 @@ def execute_custom_code(args: dict):
                 logging.info(f"📊 Successfully loaded {len(spi_data_list)} years of {month_name} SPI data")
                 
                 # Create animation with Cartopy projection
-                fig = plt.figure(figsize=(14, 10))
+                fig = plt.figure(figsize=(14, 12))  # Increased height for note
                 fig.patch.set_facecolor('white')
                 ax = fig.add_subplot(111, projection=ccrs.PlateCarree())
                 
@@ -473,9 +473,10 @@ def execute_custom_code(args: dict):
                     data = spi_data_list[frame]
                     year = years_list[frame]
                     
-                    # Plot SPI data with fixed scale (-2.5 to 2.5)
+                    # FIXED: Use coolwarm_r (reversed coolwarm) for SPI 
+                    # This gives: blue for positive SPI (wet), red for negative SPI (drought)
                     im = ax.pcolormesh(data.longitude, data.latitude, data.values, 
-                                      cmap='RdBu', vmin=-2.5, vmax=2.5, 
+                                      cmap='coolwarm_r', vmin=-2.5, vmax=2.5, 
                                       shading='auto', transform=ccrs.PlateCarree())
                     
                     # Add geographic features
@@ -513,6 +514,19 @@ def execute_custom_code(args: dict):
                                 fontsize=16, fontweight='bold', pad=20)
                     
                     return [im]
+                
+                # NEW: Add SPI category explanation at bottom of animation
+                note_text = ("SPI Categories: Extreme Drought (≤ -2.0, Red) • Severe Drought (-2.0 to -1.5) • " +
+                           "Moderate Drought (-1.5 to -1.0) • Mild Drought (-1.0 to -0.5) • " +
+                           "Near Normal (-0.5 to 0.5, White) • Mild Wet (0.5 to 1.0) • " +
+                           "Moderate Wet (1.0 to 1.5) • Severe Wet (1.5 to 2.0) • Extreme Wet (≥ 2.0, Blue)")
+                
+                fig.text(0.5, 0.02, note_text, ha='center', va='bottom', fontsize=16, 
+                        fontweight='bold', wrap=True, bbox=dict(boxstyle='round,pad=0.5', 
+                        facecolor='lightgray', alpha=0.8))
+                
+                # Adjust layout to accommodate note
+                plt.subplots_adjust(bottom=0.12)
                 
                 # Create animation
                 try:
@@ -561,8 +575,7 @@ def execute_custom_code(args: dict):
                     except AttributeError:
                         pass
                 
-                # FIXED: Use RdBu (not RdBu_r) for correct SPI coloring
-                # Red = negative SPI (drought), Blue = positive SPI (wet)
+                # REVERTED: Back to RdBu for single SPI maps (red=drought, blue=wet)
                 im = ax.pcolormesh(lon_data, lat_data, data_values, 
                                   cmap='RdBu', shading='auto', 
                                   transform=ccrs.PlateCarree(), 

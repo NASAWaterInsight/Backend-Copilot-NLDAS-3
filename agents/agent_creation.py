@@ -197,12 +197,12 @@ june_data = ds_june['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longi
 if hasattr(june_data, 'squeeze'):
     june_data = june_data.squeeze()
 
-# Create subplot comparison
-fig = plt.figure(figsize=(20, 10))
+# Create subplot comparison with increased height for note
+fig = plt.figure(figsize=(20, 12))
 ax1 = fig.add_subplot(1, 2, 1, projection=ccrs.PlateCarree())
 ax2 = fig.add_subplot(1, 2, 2, projection=ccrs.PlateCarree())
 
-# Both use same SPI scale (-2.5 to 2.5)
+# Both use same SPI scale (-2.5 to 2.5) with RdBu colormap (original for subplots)
 im1 = ax1.pcolormesh(may_data.longitude, may_data.latitude, may_data.values, cmap='RdBu', vmin=-2.5, vmax=2.5, shading='auto', transform=ccrs.PlateCarree())
 ax1.add_feature(cfeature.COASTLINE)
 ax1.add_feature(cfeature.STATES)
@@ -213,8 +213,19 @@ ax2.add_feature(cfeature.COASTLINE)
 ax2.add_feature(cfeature.STATES)  
 ax2.set_title('Florida SPI - June 2023')
 
-plt.subplots_adjust(left=0.05, right=0.85, wspace=0.1)
+plt.subplots_adjust(left=0.05, right=0.85, wspace=0.1, bottom=0.12)
 cbar = plt.colorbar(im2, ax=[ax1, ax2], shrink=0.8, pad=0.02, label='SPI3 (Drought Index)')
+
+# NEW: Add SPI category explanation at bottom of subplot
+note_text = ("SPI Categories: Extreme Drought (≤ -2.0, Red) • Severe Drought (-2.0 to -1.5) • " +
+           "Moderate Drought (-1.5 to -1.0) • Mild Drought (-1.0 to -0.5) • " +
+           "Near Normal (-0.5 to 0.5, White) • Mild Wet (0.5 to 1.0) • " +
+           "Moderate Wet (1.0 to 1.5) • Severe Wet (1.5 to 2.0) • Extreme Wet (≥ 2.0, Blue)")
+
+fig.text(0.5, 0.02, note_text, ha='center', va='bottom', fontsize=16, 
+        fontweight='bold', wrap=True, bbox=dict(boxstyle='round,pad=0.5', 
+        facecolor='lightgray', alpha=0.8))
+
 url = save_plot_to_blob_simple(fig, 'florida_spi_may_june_2023.png', account_key)
 plt.close(fig)
 ds_may.close()
