@@ -3,6 +3,8 @@ import logging
 import traceback
 import builtins
 
+
+
 def execute_custom_code(args: dict):
     """
     Execute custom Python code with proper NLDAS-3 environment setup
@@ -28,11 +30,15 @@ def execute_custom_code(args: dict):
         try:
             from .weather_tool import (
                 load_specific_date_kerchunk, 
-                save_plot_to_blob_simple,  # Make sure this is imported
+                save_plot_to_blob_simple,
                 get_account_key,
                 find_available_kerchunk_files,
                 ACCOUNT_NAME,
-                VARIABLE_MAPPING
+                VARIABLE_MAPPING,
+                # ADD THESE THREE LINES:
+                detect_data_source,
+                find_available_spi_files,
+                load_specific_month_spi_kerchunk
             )
             
             # ENHANCED: Log what functions were actually imported for debugging
@@ -239,6 +245,7 @@ def execute_custom_code(args: dict):
                 from datetime import datetime, timedelta
                 import cartopy.crs as ccrs
                 import cartopy.feature as cfeature
+                import numpy as np
                 
                 logging.info(f"🎬 Creating {num_days}-day animation for {variable_name} with Cartopy features")
                 
@@ -282,6 +289,28 @@ def execute_custom_code(args: dict):
                 
                 logging.info(f"📊 Successfully loaded {len(daily_data_list)} days of data")
                 
+                # FIXED: Calculate color scale with proper NaN handling
+                all_values = []
+                for data in daily_data_list:
+                    # Filter out NaN values before adding to the list
+                    valid_values = data.values[~np.isnan(data.values)]
+                    if len(valid_values) > 0:
+                        all_values.extend(valid_values.flatten())
+                
+                if len(all_values) == 0:
+                    raise Exception("No valid (non-NaN) data found for animation")
+                
+                # Calculate color scale from valid values only
+                vmin, vmax = np.min(all_values), np.max(all_values)
+                
+                # Add small buffer if min and max are too close
+                if abs(vmax - vmin) < 0.1:
+                    center = (vmin + vmax) / 2
+                    vmin = center - 0.5
+                    vmax = center + 0.5
+                
+                logging.info(f"🎨 Color scale (NaN-filtered): {vmin:.2f} to {vmax:.2f}")
+                
                 # FIXED: Create animation with Cartopy projection
                 fig = plt.figure(figsize=(12, 10))
                 fig.patch.set_facecolor('white')  # CRITICAL: White figure background
@@ -295,14 +324,6 @@ def execute_custom_code(args: dict):
                         ax.outline_patch.set_visible(False)
                     except AttributeError:
                         pass
-                
-                # Calculate color scale (unchanged)
-                all_values = []
-                for data in daily_data_list:
-                    all_values.extend(data.values.flatten())
-                vmin, vmax = min(all_values), max(all_values)
-                
-                logging.info(f"🎨 Color scale: {vmin:.2f} to {vmax:.2f}")
                 
                 cbar_created = False
                 
@@ -325,7 +346,7 @@ def execute_custom_code(args: dict):
                         else:
                             unit_label = f'{variable_name} Average'
                     
-                    # FIXED: Plot with Cartopy transform
+                    # FIXED: Plot with Cartopy transform using calculated vmin/vmax
                     im = ax.pcolormesh(data.lon, data.lat, data.values, 
                                       cmap=colormap, vmin=vmin, vmax=vmax, 
                                       shading='auto', transform=ccrs.PlateCarree())
@@ -380,152 +401,226 @@ def execute_custom_code(args: dict):
                     plt.close(fig)
                     raise Exception(f"Animation creation failed: {str(anim_error)}")
 
-            # ENHANCED: Updated dual variable animation with Cartopy
-            def create_dual_variable_animation(start_year, start_month, start_day, num_days, lat_min, lat_max, lon_min, lon_max, region_name="Region"):
+            # NEW: SPI Multi-Year Animation Function
+            def create_spi_multi_year_animation(start_year, end_year, month, lat_min, lat_max, lon_min, lon_max, region_name="Region"):
                 """
-                Create dual-variable animation with proper Cartopy projections
-                FIXED: Both subplots now use Cartopy with geographic features
+                Create an animated GIF showing SPI for the same month across multiple years
+                Example: May SPI from 2010-2020 to show drought trends over time
                 """
                 import matplotlib.animation as animation_module
-                from datetime import datetime, timedelta
+                from datetime import datetime
                 import cartopy.crs as ccrs
                 import cartopy.feature as cfeature
                 
-                logging.info(f"🎬 Creating dual-variable Cartopy animation for {num_days} days")
+                logging.info(f"🎬 Creating SPI animation for {month:02d}/{start_year}-{end_year} ({end_year-start_year+1} years)")
                 
-                daily_temp_list = []
-                daily_precip_list = []
-                daily_dates = []
+                spi_data_list = []
+                years_list = []
+                month_name = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][month-1]
                 
-                # Load data (unchanged)
-                for day_offset in range(num_days):
-                    current_date = datetime(start_year, start_month, start_day) + timedelta(days=day_offset)
-                    
+                # Load SPI data for each year
+                for year in range(start_year, end_year + 1):
                     try:
-                        ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 
-                                                          current_date.year, current_date.month, current_date.day)
+                        logging.info(f"📅 Loading {month_name} {year} SPI data...")
                         
-                        temp_data = ds['Tair'].sel(
-                            lat=builtins.slice(lat_min, lat_max),
-                            lon=builtins.slice(lon_min, lon_max)
-                        ).mean(dim='time') - 273.15
+                        ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
                         
-                        precip_data = ds['Rainf'].sel(
-                            lat=builtins.slice(lat_min, lat_max),
-                            lon=builtins.slice(lon_min, lon_max)
-                        ).sum(dim='time')
+                        spi_data = ds['SPI3'].sel(
+                            latitude=builtins.slice(lat_min, lat_max),
+                            longitude=builtins.slice(lon_min, lon_max)
+                        )
                         
-                        daily_temp_list.append(temp_data)
-                        daily_precip_list.append(precip_data)
-                        daily_dates.append(current_date)
+                        # Squeeze out extra dimensions
+                        if hasattr(spi_data, 'squeeze'):
+                            spi_data = spi_data.squeeze()
+                        
+                        spi_data_list.append(spi_data)
+                        years_list.append(year)
                         ds.close()
                         
+                        logging.info(f"✅ Loaded {month_name} {year}")
+                        
                     except Exception as e:
-                        logging.warning(f"⚠️ Failed to load data for {current_date.date()}: {e}")
+                        logging.warning(f"⚠️ Failed to load {month_name} {year}: {e}")
                         continue
                 
-                if not daily_temp_list or not daily_precip_list:
-                    raise Exception("No daily data could be loaded for dual animation")
+                if not spi_data_list:
+                    raise Exception(f"No SPI data could be loaded for {month_name} {start_year}-{end_year}")
                 
-                # FIXED: Create figure with Cartopy subplots
-                fig = plt.figure(figsize=(20, 8))
+                logging.info(f"📊 Successfully loaded {len(spi_data_list)} years of {month_name} SPI data")
+                
+                # Create animation with Cartopy projection
+                fig = plt.figure(figsize=(14, 10))
                 fig.patch.set_facecolor('white')
+                ax = fig.add_subplot(111, projection=ccrs.PlateCarree())
                 
-                # FIXED: Create Cartopy subplots
-                ax1 = fig.add_subplot(1, 2, 1, projection=ccrs.PlateCarree())
-                ax2 = fig.add_subplot(1, 2, 2, projection=ccrs.PlateCarree())
-                
-                # CRITICAL: Background removal for BOTH Cartopy subplots
-                for ax in [ax1, ax2]:
+                # Background removal
+                try:
+                    ax.background_patch.set_visible(False)
+                except AttributeError:
                     try:
-                        ax.background_patch.set_visible(False)
+                        ax.outline_patch.set_visible(False)
                     except AttributeError:
-                        try:
-                            ax.outline_patch.set_visible(False)
-                        except AttributeError:
-                            pass
+                        pass
                 
-                # Calculate color ranges (unchanged)
-                temp_values = []
-                precip_values = []
-                for temp, precip in zip(daily_temp_list, daily_precip_list):
-                    temp_values.extend(temp.values.flatten())
-                    precip_values.extend(precip.values.flatten())
+                cbar_created = False
                 
-                temp_vmin, temp_vmax = min(temp_values), max(temp_values)
-                precip_vmin, precip_vmax = min(precip_values), max(precip_values)
-                
-                # FIXED: Animation function with Cartopy features
-                def animate_dual(frame):
-                    ax1.clear()
-                    ax2.clear()
+                # Animation function for SPI
+                def animate(frame):
+                    nonlocal cbar_created
+                    ax.clear()
                     
-                    temp_data = daily_temp_list[frame]
-                    precip_data = daily_precip_list[frame]
-                    date = daily_dates[frame]
+                    data = spi_data_list[frame]
+                    year = years_list[frame]
                     
-                    # FIXED: Plot with Cartopy transforms
-                    im1 = ax1.pcolormesh(temp_data.lon, temp_data.lat, temp_data.values, 
-                                        cmap='coolwarm', vmin=temp_vmin, vmax=temp_vmax, 
-                                        shading='auto', transform=ccrs.PlateCarree())
+                    # Plot SPI data with fixed scale (-2.5 to 2.5)
+                    im = ax.pcolormesh(data.longitude, data.latitude, data.values, 
+                                      cmap='RdBu', vmin=-2.5, vmax=2.5, 
+                                      shading='auto', transform=ccrs.PlateCarree())
                     
-                    im2 = ax2.pcolormesh(precip_data.lon, precip_data.lat, precip_data.values,
-                                        cmap='Blues', vmin=precip_vmin, vmax=precip_vmax, 
-                                        shading='auto', transform=ccrs.PlateCarree())
+                    # Add geographic features
+                    ax.add_feature(cfeature.COASTLINE, linewidth=0.8, edgecolor='black', facecolor='none', alpha=0.7)
+                    ax.add_feature(cfeature.BORDERS, linewidth=0.6, edgecolor='darkgray', facecolor='none', alpha=0.8)
+                    ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor='gray', facecolor='none', alpha=0.6)
                     
-                    # FIXED: Add Cartopy geographic features to BOTH subplots
-                    for ax in [ax1, ax2]:
-                        ax.add_feature(cfeature.COASTLINE, linewidth=0.8, edgecolor='black', facecolor='none', alpha=0.7)
-                        ax.add_feature(cfeature.BORDERS, linewidth=0.6, edgecolor='darkgray', facecolor='none', alpha=0.8)
-                        ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor='gray', facecolor='none', alpha=0.6)
-                        
-                        # Add gridlines
-                        gl = ax.gridlines(draw_labels=True, alpha=0.3, linestyle='--', linewidth=0.5)
-                        gl.top_labels = False
-                        gl.right_labels = False
-                        gl.left_labels = True
-                        gl.bottom_labels = True
-                        
-                        # Set extent
-                        try:
-                            ax.set_extent([temp_data.lon.min(), temp_data.lon.max(), 
-                                         temp_data.lat.min(), temp_data.lat.max()], 
-                                         crs=ccrs.PlateCarree())
-                        except:
-                            pass
+                    # Add gridlines
+                    gl = ax.gridlines(draw_labels=True, alpha=0.3, linestyle='--', linewidth=0.5)
+                    gl.top_labels = False
+                    gl.right_labels = False
+                    gl.left_labels = True
+                    gl.bottom_labels = True
                     
-                    # Titles
-                    ax1.set_title(f'{region_name} Temperature\n{date.strftime("%Y-%m-%d")}', fontsize=16)
-                    ax2.set_title(f'{region_name} Precipitation\n{date.strftime("%Y-%m-%d")}', fontsize=16)
+                    # Set extent
+                    try:
+                        ax.set_extent([data.longitude.min(), data.longitude.max(), 
+                                     data.latitude.min(), data.latitude.max()], 
+                                     crs=ccrs.PlateCarree())
+                    except:
+                        pass
                     
-                    # Colorbars (only on first frame)
-                    if frame == 0:
-                        cbar1 = fig.colorbar(im1, ax=ax1, shrink=0.8)
-                        cbar1.set_label('Temperature (°C)', fontsize=16)
-                        
-                        cbar2 = fig.colorbar(im2, ax=ax2, shrink=0.8)
-                        cbar2.set_label('Precipitation (mm)', fontsize=16)
+                    # Add colorbar only once
+                    if not cbar_created:
+                        cbar = fig.colorbar(im, ax=ax, shrink=0.8, pad=0.05)
+                        cbar.set_label('Standardized Precipitation Index (SPI)', fontsize=14, fontweight='bold')
+                        cbar.set_ticks([-2, -1, 0, 1, 2])
+                        cbar.set_ticklabels(['-2', '-1', '0', '1', '2'])
+                        cbar.ax.tick_params(labelsize=12)
+                        cbar_created = True
                     
-                    return [im1, im2]
+                    # Dynamic title showing year and trend context
+                    ax.set_title(f'{region_name} SPI - {month_name} {year}\n' +
+                                f'Drought Conditions Across {end_year-start_year+1} Years ({start_year}-{end_year})', 
+                                fontsize=16, fontweight='bold', pad=20)
+                    
+                    return [im]
                 
                 # Create animation
-                anim = animation_module.FuncAnimation(
-                    fig, animate_dual,
-                    frames=len(daily_temp_list),
-                    interval=1500,
-                    blit=False,
-                    repeat=True
-                )
-                
-                logging.info(f"✅ Created dual-variable Cartopy animation with {len(daily_temp_list)} frames and geographic features")
-                return anim, fig
+                try:
+                    anim = animation_module.FuncAnimation(
+                        fig, animate, 
+                        frames=len(spi_data_list), 
+                        interval=2000,  # 2 seconds per frame for better viewing
+                        blit=False,
+                        repeat=True
+                    )
+                    
+                    logging.info(f"✅ Created SPI multi-year animation with {len(spi_data_list)} frames")
+                    return anim, fig
+                    
+                except Exception as anim_error:
+                    logging.error(f"❌ SPI animation creation failed: {anim_error}")
+                    plt.close(fig)
+                    raise Exception(f"SPI animation creation failed: {str(anim_error)}")
 
+            # ENHANCED: Add SPI visualization function with drought categories
+            def create_spi_map_with_categories(lon_data, lat_data, data_values, title, region_name=None):
+                """
+                Create SPI map with standardized scale and drought category labels
+                """
+                import cartopy.crs as ccrs
+                import cartopy.feature as cfeature
+                import matplotlib.pyplot as plt
+                import numpy as np
+                
+                # Squeeze data if needed
+                if hasattr(data_values, 'squeeze'):
+                    data_values = data_values.squeeze()
+                elif isinstance(data_values, np.ndarray) and data_values.ndim > 2:
+                    data_values = np.squeeze(data_values)
+                
+                fig = plt.figure(figsize=(14, 12))  # Increased height for note
+                fig.patch.set_facecolor('white')
+                ax = plt.axes(projection=ccrs.PlateCarree())
+                
+                # Background removal
+                try:
+                    ax.background_patch.set_visible(False)
+                except AttributeError:
+                    try:
+                        ax.outline_patch.set_visible(False)
+                    except AttributeError:
+                        pass
+                
+                # FIXED: Use RdBu (not RdBu_r) for correct SPI coloring
+                # Red = negative SPI (drought), Blue = positive SPI (wet)
+                im = ax.pcolormesh(lon_data, lat_data, data_values, 
+                                  cmap='RdBu', shading='auto', 
+                                  transform=ccrs.PlateCarree(), 
+                                  vmin=-2.5, vmax=2.5)
+                
+                # Geographic features
+                ax.add_feature(cfeature.COASTLINE, linewidth=0.8, edgecolor='black', facecolor='none', alpha=0.8)
+                ax.add_feature(cfeature.BORDERS, linewidth=0.6, edgecolor='gray', facecolor='none', alpha=0.7)
+                ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor='darkgray', facecolor='none', alpha=0.6)
+                
+                # CLEAN: Simple colorbar with just numbers
+                cbar = plt.colorbar(im, ax=ax, shrink=0.8, pad=0.05)
+                cbar.set_label('Standardized Precipitation Index (SPI)', fontsize=14, fontweight='bold')
+                
+                # CLEAN: Use meaningful ticks for SPI range
+                cbar.set_ticks([-2, -1, 0, 1, 2])
+                cbar.set_ticklabels(['-2', '-1', '0', '1', '2'])
+                cbar.ax.tick_params(labelsize=12)
+                
+                # Title and gridlines
+                ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+                
+                gl = ax.gridlines(draw_labels=True, alpha=0.3, linestyle='--', linewidth=0.5)
+                gl.top_labels = False
+                gl.right_labels = False
+                
+                # Set extent
+                try:
+                    ax.set_extent([lon_data.min(), lon_data.max(), 
+                                  lat_data.min(), lat_data.max()], 
+                                  crs=ccrs.PlateCarree())
+                except:
+                    pass
+                
+                # ENHANCED: Updated note to reflect correct color scheme
+                note_text = ("SPI Categories: Extreme Drought (≤ -2.0, Red) • Severe Drought (-2.0 to -1.5) • " +
+                           "Moderate Drought (-1.5 to -1.0) • Mild Drought (-1.0 to -0.5) • " +
+                           "Near Normal (-0.5 to 0.5, White) • Mild Wet (0.5 to 1.0) • " +
+                           "Moderate Wet (1.0 to 1.5) • Severe Wet (1.5 to 2.0) • Extreme Wet (≥ 2.0, Blue)")
+                
+                fig.text(0.5, 0.02, note_text, ha='center', va='bottom', fontsize=18, 
+                        fontweight='bold', wrap=True, bbox=dict(boxstyle='round,pad=0.5', 
+                        facecolor='lightgray', alpha=0.8))
+                
+                # Adjust layout to accommodate note
+                plt.subplots_adjust(bottom=0.12)
+                
+                return fig, ax
+
+            # MISSING FUNCTION: Add the city labels function
             def add_city_labels_for_region(ax, extent, region_name=None):
                 """
                 Add city labels based on the map extent and region
                 ENHANCED: Better positioning, water bodies, works for ALL variables
                 """
                 try:
+                    import cartopy.crs as ccrs
+                    
                     # Define major cities by region with coordinates
                     city_database = {
                         'california': [
@@ -563,108 +658,46 @@ def execute_custom_code(args: dict):
                         ]
                     }
                     
-                    # NEW: Water bodies database (lakes, bays, etc.)
-                    water_bodies_database = {
-                        'california': [
-                            ('San Francisco Bay', -122.3, 37.7),
-                            ('Lake Tahoe', -120.0, 39.1),
-                            ('Salton Sea', -115.8, 33.3)
-                        ],
-                        'florida': [
-                            ('Tampa Bay', -82.6, 27.8),
-                            ('Biscayne Bay', -80.2, 25.6),
-                            ('Lake Okeechobee', -80.8, 26.9),
-                            ('Florida Bay', -80.9, 25.1)
-                        ],
-                        'maryland': [
-                            ('Chesapeake Bay', -76.3, 38.8),
-                            ('Potomac River', -77.0, 38.5)
-                        ],
-                        'alaska': [
-                            ('Cook Inlet', -151.0, 60.5),
-                            ('Prince William Sound', -147.0, 60.7),
-                            ('Bristol Bay', -159.0, 58.5)
-                        ],
-                        'michigan': [
-                            ('Lake Michigan', -87.0, 43.5),
-                            ('Lake Huron', -83.5, 44.8),
-                            ('Lake Superior', -87.5, 47.2),
-                            ('Saginaw Bay', -83.8, 43.8)
-                        ]
-                    }
-                    
                     # Get extent bounds
                     lon_min, lon_max, lat_min, lat_max = extent
                     
-                    # FIXED: Much smaller, consistent offset (was too dynamic before)
-                    lon_offset = 0.3  # Fixed small offset
-                    lat_offset = 0.1  # Fixed small offset
+                    # Fixed small offset
+                    lon_offset = 0.3
+                    lat_offset = 0.1
                     
-                    # ENHANCED: Debug logging for troubleshooting
-                    logging.info(f"🏙️ City labeling request for ALL variables:")
-                    logging.info(f"   Region name provided: '{region_name}'")
-                    logging.info(f"   Map extent: lon {lon_min:.1f} to {lon_max:.1f}, lat {lat_min:.1f} to {lat_max:.1f}")
-                    logging.info(f"   FIXED offsets: lon_offset={lon_offset}, lat_offset={lat_offset}")
+                    logging.info(f"🏙️ City labeling for region: '{region_name}'")
                     
                     # Select cities to show
                     cities_to_show = []
-                    water_bodies_to_show = []
                     
-                    # FIXED: More robust region name matching
                     if region_name:
                         region_key = region_name.lower().strip()
-                        logging.info(f"   Looking for region key: '{region_key}'")
-                        
                         if region_key in city_database:
                             cities_to_show = city_database[region_key]
-                            # NEW: Add water bodies for the region
-                            water_bodies_to_show = water_bodies_database.get(region_key, [])
-                            logging.info(f"   ✅ Found {len(cities_to_show)} cities and {len(water_bodies_to_show)} water bodies for {region_key}")
-                        else:
-                            logging.warning(f"   ❌ Region '{region_key}' not found in database")
-                            logging.warning(f"   Available regions: {list(city_database.keys())}")
                     else:
-                        logging.info("   No region name provided, using extent-based detection")
-                        
                         # Auto-detect based on extent
                         all_cities = []
-                        all_water_bodies = []
                         for region_cities in city_database.values():
                             all_cities.extend(region_cities)
-                        for region_water in water_bodies_database.values():
-                            all_water_bodies.extend(region_water)
                         
-                        # Filter cities and water bodies within the extent
                         for city, lon, lat in all_cities:
                             if lon_min <= lon <= lon_max and lat_min <= lat <= lat_max:
                                 cities_to_show.append((city, lon, lat))
-                                logging.info(f"   📍 Auto-detected city: {city} ({lon}, {lat})")
-                        
-                        for water_body, lon, lat in all_water_bodies:
-                            if lon_min <= lon <= lon_max and lat_min <= lat <= lat_max:
-                                water_bodies_to_show.append((water_body, lon, lat))
-                                logging.info(f"   🌊 Auto-detected water body: {water_body} ({lon}, {lat})")
                     
-                    # ENHANCED: Add city markers and labels with FIXED positioning
+                    # Add city markers and labels
                     cities_added = 0
                     for city_name, lon, lat in cities_to_show:
-                        # DOUBLE CHECK: Ensure city is within bounds
                         if lon_min <= lon <= lon_max and lat_min <= lat <= lat_max:
                             try:
-                                # ENHANCED: Larger, more visible city marker with double border
+                                # City marker
                                 ax.plot(lon, lat, 'o', markersize=10, 
                                        color='red', markeredgecolor='white', 
                                        markeredgewidth=3, transform=ccrs.PlateCarree(), zorder=15)
                                 
-                                # Add inner marker for extra visibility
-                                ax.plot(lon, lat, 'o', markersize=6, 
-                                       color='darkred', transform=ccrs.PlateCarree(), zorder=16)
+                                # City label
+                                label_lon = lon + lon_offset
+                                label_lat = lat + lat_offset
                                 
-                                # FIXED: Single label with SMALL, consistent offset
-                                label_lon = lon + lon_offset  # Just 0.3 degrees
-                                label_lat = lat + lat_offset  # Just 0.1 degrees
-                                
-                                # Single high-contrast label (simplified from triple-layer)
                                 ax.text(label_lon, label_lat, city_name, 
                                        transform=ccrs.PlateCarree(),
                                        fontsize=13, fontweight='bold', color='black',
@@ -675,128 +708,44 @@ def execute_custom_code(args: dict):
                                        zorder=19)
                                 
                                 cities_added += 1
-                                logging.info(f"   ✅ Added FIXED-position city: {city_name} at ({lon:.1f}, {lat:.1f}) -> label at ({label_lon:.1f}, {label_lat:.1f})")
+                                logging.info(f"   ✅ Added city: {city_name}")
                                 
                             except Exception as city_error:
                                 logging.error(f"   ❌ Failed to add city {city_name}: {city_error}")
-                        else:
-                            logging.info(f"   ⚠️ City {city_name} outside bounds: ({lon:.1f}, {lat:.1f})")
                     
-                    # NEW: Add water body labels (different style)
-                    water_bodies_added = 0
-                    for water_name, lon, lat in water_bodies_to_show:
-                        if lon_min <= lon <= lon_max and lat_min <= lat <= lat_max:
-                            try:
-                                # Water body marker (blue square)
-                                ax.plot(lon, lat, 's', markersize=8, 
-                                       color='blue', markeredgecolor='white', 
-                                       markeredgewidth=2, transform=ccrs.PlateCarree(), zorder=15)
-                                
-                                # Water body label with blue styling
-                                label_lon = lon + lon_offset
-                                label_lat = lat - lat_offset  # Offset downward for water bodies
-                                
-                                ax.text(label_lon, label_lat, water_name, 
-                                       transform=ccrs.PlateCarree(),
-                                       fontsize=11, fontweight='bold', color='navy',
-                                       bbox=dict(boxstyle='round,pad=0.2', 
-                                                facecolor='lightblue', alpha=0.9, 
-                                                edgecolor='blue', linewidth=1),
-                                       horizontalalignment='left', verticalalignment='top',
-                                       zorder=18)
-                                
-                                water_bodies_added += 1
-                                logging.info(f"   🌊 Added water body: {water_name} at ({lon:.1f}, {lat:.1f})")
-                                
-                            except Exception as water_error:
-                                logging.error(f"   ❌ Failed to add water body {water_name}: {water_error}")
-                    
-                    total_labels = cities_added + water_bodies_added
-                    if total_labels > 0:
-                        logging.info(f"✅ Successfully added {cities_added} cities + {water_bodies_added} = {total_labels} total labels")
-                        logging.info(f"📍 Labels work for ALL variables (temperature, precipitation, humidity, etc.)")
+                    if cities_added > 0:
+                        logging.info(f"✅ Successfully added {cities_added} cities")
                     else:
-                        logging.warning(f"⚠️ No labels added! Check region name and coordinates.")
+                        logging.warning(f"⚠️ No cities added for region '{region_name}'")
                         
                 except Exception as e:
-                    logging.error(f"⚠️ City/water body labels failed: {e}")
-                    import traceback
-                    logging.error(f"⚠️ Labels traceback: {traceback.format_exc()}")
+                    logging.error(f"⚠️ City labels failed: {e}")
 
-            def create_cartopy_map_with_cities(lon_data, lat_data, data_values, title, colorbar_label, cmap='viridis', figsize=(12, 8), region_name=None):
-                """
-                Create a Cartopy map with geographic features AND city labels
-                FIXED: Now includes the same background removal as create_cartopy_map
-                """
-                try:
-                    import cartopy.crs as ccrs
-                    import cartopy.feature as cfeature
-                    
-                    # Create figure with Cartopy projection
-                    fig = plt.figure(figsize=figsize)
-                    fig.patch.set_facecolor('white')  # CRITICAL: White figure background
-                    ax = plt.axes(projection=ccrs.PlateCarree())
-                    
-                    # CRITICAL: Version-compatible background removal - SAME AS create_cartopy_map
-                    try:
-                        ax.background_patch.set_visible(False)
-                    except AttributeError:
-                        try:
-                            ax.outline_patch.set_visible(False)
-                        except AttributeError:
-                            pass
-                    
-                    # Plot the data
-                    im = ax.pcolormesh(lon_data, lat_data, data_values, 
-                                    cmap=cmap, shading='auto', transform=ccrs.PlateCarree())
-                    
-                    # CRITICAL: Use edgecolor/facecolor instead of color to prevent fills - SAME AS create_cartopy_map
-                    ax.add_feature(cfeature.COASTLINE, linewidth=0.8, edgecolor='black', facecolor='none', alpha=0.7)
-                    ax.add_feature(cfeature.BORDERS, linewidth=0.6, edgecolor='darkgray', facecolor='none', alpha=0.8)
-                    ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor='gray', facecolor='none', alpha=0.6)
-                    
-                    # ADD CITY LABELS based on region
-                    extent = [lon_data.min(), lon_data.max(), lat_data.min(), lat_data.max()]
-                    add_city_labels_for_region(ax, extent, region_name)
-                    
-                    # CRITICAL: Clean gridlines - SAME AS create_cartopy_map
-                    gl = ax.gridlines(draw_labels=True, alpha=0.3, linestyle='--', linewidth=0.5)
-                    gl.top_labels = False
-                    gl.right_labels = False
-                    gl.left_labels = True
-                    gl.bottom_labels = True
-                    
-                    # Colorbar and title
-                    cbar = plt.colorbar(im, ax=ax, shrink=0.8)
-                    cbar.set_label(colorbar_label, fontsize=16)
-                    ax.set_title(title, fontsize=16, fontweight='bold')
-                    
-                    # Set extent
-                    ax.set_extent(extent, crs=ccrs.PlateCarree())
-                    
-                    logging.info("✅ Created Cartopy map with cities (no gray areas)")
-                    return fig, ax
-                    
-                except Exception as e:
-                    logging.error(f"❌ Cartopy map with cities failed: {e}")
-                    # Fallback to regular map
-                    return create_cartopy_map(lon_data, lat_data, data_values, title, colorbar_label, cmap, figsize)
-
+            # MISSING FUNCTION: Add the cartopy map function
             def create_cartopy_map(lon_data, lat_data, data_values, title, colorbar_label, cmap='viridis', figsize=(12, 8), region_name=None, show_cities=False):
                 """
                 Create a proper Cartopy map with geographic features
-                FIXED: Now includes background removal to prevent gray areas
+                FIXED: Now includes background removal and handles extra dimensions
                 """
                 try:
                     import cartopy.crs as ccrs
                     import cartopy.feature as cfeature
+                    import numpy as np
+                    
+                    # Handle extra dimensions in data_values
+                    if hasattr(data_values, 'squeeze'):
+                        data_values = data_values.squeeze()
+                    elif isinstance(data_values, np.ndarray) and data_values.ndim > 2:
+                        data_values = np.squeeze(data_values)
+                    
+                    logging.info(f"Data shape after squeeze: {data_values.shape}")
                     
                     # Create figure with Cartopy projection
                     fig = plt.figure(figsize=figsize)
-                    fig.patch.set_facecolor('white')  # CRITICAL: White figure background
+                    fig.patch.set_facecolor('white')
                     ax = plt.axes(projection=ccrs.PlateCarree())
                     
-                    # CRITICAL: Version-compatible background removal
+                    # Background removal
                     try:
                         ax.background_patch.set_visible(False)
                     except AttributeError:
@@ -809,12 +758,12 @@ def execute_custom_code(args: dict):
                     im = ax.pcolormesh(lon_data, lat_data, data_values, 
                                     cmap=cmap, shading='auto', transform=ccrs.PlateCarree())
                     
-                    # CRITICAL: Use edgecolor/facecolor instead of color to prevent fills
+                    # Geographic features
                     ax.add_feature(cfeature.COASTLINE, linewidth=0.8, edgecolor='black', facecolor='none', alpha=0.7)
                     ax.add_feature(cfeature.BORDERS, linewidth=0.6, edgecolor='darkgray', facecolor='none', alpha=0.8)
                     ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor='gray', facecolor='none', alpha=0.6)
 
-                    # CRITICAL: Clean gridlines
+                    # Gridlines
                     gl = ax.gridlines(draw_labels=True, alpha=0.3, linestyle='--', linewidth=0.5)
                     gl.top_labels = False
                     gl.right_labels = False
@@ -828,7 +777,7 @@ def execute_custom_code(args: dict):
                     # Set title
                     ax.set_title(title, fontsize=16, fontweight='bold')
                     
-                    # Set extent if data bounds are available
+                    # Set extent
                     try:
                         ax.set_extent([lon_data.min(), lon_data.max(), 
                                     lat_data.min(), lat_data.max()], 
@@ -836,8 +785,8 @@ def execute_custom_code(args: dict):
                     except:
                         pass
                     
-                    # AFTER features & before return, inject labels if requested
-                    if (show_cities or region_name) and 'add_city_labels_for_region' in globals():
+                    # Add city labels if requested
+                    if show_cities or region_name:
                         try:
                             extent = [float(lon_data.min()), float(lon_data.max()),
                                       float(lat_data.min()), float(lat_data.max())]
@@ -845,15 +794,22 @@ def execute_custom_code(args: dict):
                         except Exception as label_err:
                             logging.warning(f"City labeling skipped: {label_err}")
                     
-                    logging.info("✅ Created Cartopy map with geographic features (no gray areas)")
+                    logging.info("✅ Created Cartopy map with geographic features")
                     return fig, ax
                     
                 except ImportError:
-                    logging.error("❌ Cartopy not available - cannot create projected map")
+                    logging.error("❌ Cartopy not available")
                     raise ImportError("Cartopy is required for proper geographic maps")
                 except Exception as e:
                     logging.error(f"❌ Cartopy map creation failed: {e}")
                     raise Exception(f"Failed to create Cartopy map: {str(e)}")
+
+            # MISSING FUNCTION: Add the cartopy map with cities function
+            def create_cartopy_map_with_cities(lon_data, lat_data, data_values, title, colorbar_label, cmap='viridis', figsize=(12, 8), region_name=None):
+                """
+                Create a Cartopy map with geographic features AND city labels
+                """
+                return create_cartopy_map(lon_data, lat_data, data_values, title, colorbar_label, cmap, figsize, region_name, show_cities=True)
 
             # Add ALL functions to execution environment - ENHANCED LOGGING
             core_functions = {
@@ -865,6 +821,10 @@ def execute_custom_code(args: dict):
                 'ACCOUNT_NAME': ACCOUNT_NAME,
                 'account_key': account_key,
                 'VARIABLE_MAPPING': VARIABLE_MAPPING,
+                # ADD THESE THREE LINES:
+                'detect_data_source': detect_data_source,
+                'find_available_spi_files': find_available_spi_files,
+                'load_specific_month_spi_kerchunk': load_specific_month_spi_kerchunk,
             }
             
             # Log each core function
@@ -890,6 +850,10 @@ def execute_custom_code(args: dict):
                 # CRITICAL FIX: Add the MISSING create_cartopy_map functions
                 'create_cartopy_map': create_cartopy_map,
                 'create_cartopy_map_with_cities': create_cartopy_map_with_cities,
+                # NEW: Add enhanced SPI visualization
+                'create_spi_map_with_categories': create_spi_map_with_categories,
+                # NEW: Add SPI multi-year animation
+                'create_spi_multi_year_animation': create_spi_multi_year_animation,
             })
             
             logging.info(f"Weather functions loaded successfully. Total functions in exec_globals: {len([k for k, v in exec_globals.items() if callable(v)])}")

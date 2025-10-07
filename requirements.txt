@@ -14,8 +14,3 @@ cartopy
 shapely
 pyproj
 requests
-geopandas>=0.13.0
-fiona>=1.8.0
-pandas>=1.5.0
-rasterio>=1.3.0
-

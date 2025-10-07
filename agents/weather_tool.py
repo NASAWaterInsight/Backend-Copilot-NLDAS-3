@@ -22,6 +22,15 @@ import base64
 KERCHUNK_CONTAINER = "kerchunk"
 KERCHUNK_COMBINED_BLOB = f"{KERCHUNK_CONTAINER}/kerchunk_combined.json"
 KERCHUNK_INDIV_PREFIX = "kerchunk_"
+# NEW: SPI Drought container configuration
+SPI_KERCHUNK_CONTAINER = "spi-kerchunk-rechunked"
+SPI_KERCHUNK_PREFIX = "kerchunk_SPI3_"
+
+# NEW: Drought-related keywords
+DROUGHT_KEYWORDS = [
+    "drought", "spi", "standardized precipitation index", "dry", "wet", 
+    "aridity", "dryness", "moisture deficit", "precipitation anomaly"
+]
 
 # Azure configuration
 TENANT_ID = "4ba2629f-3085-4f9a-b2ec-3962de0e3490"
@@ -57,7 +66,13 @@ VARIABLE_MAPPING = {
     "sw_radiation": "SWdown",
     "solar": "SWdown",
     "solar_radiation": "SWdown",
-    "radiation": "LWdown"
+    "radiation": "LWdown",
+    "spi": "SPI3",
+    "spi3": "SPI3", 
+    "standardized_precipitation_index": "SPI3",
+    "drought_index": "SPI3",
+    "drought": "SPI3",
+    "precipitation_anomaly": "SPI3"
 }
 
 def get_mapped_variable(variable: str, available_vars: list):
@@ -564,4 +579,137 @@ def handle_weather_function_call(function_args: dict):
             "error": str(e)
         }
 
-# ...remaining code...
+def detect_data_source(query_text: str):
+    """
+    Detect whether query is about drought/SPI or regular NLDAS variables
+    Returns: ("spi", "monthly") or ("nldas", "daily")
+    """
+    query_lower = query_text.lower()
+    
+    # Check for drought-related keywords
+    for keyword in DROUGHT_KEYWORDS:
+        if keyword in query_lower:
+            logging.info(f"🔍 Detected drought query (keyword: '{keyword}')")
+            return "spi", "monthly"
+    
+    # Default to NLDAS daily data
+    return "nldas", "daily"
+
+def find_available_spi_files(account_name: str, account_key: str):
+    """
+    Find all available SPI kerchunk files (monthly format: kerchunk_SPI3_YYYYMM.json)
+    """
+    fs = _kerchunk_fs(account_name, account_key)
+    
+    try:
+        entries = fs.ls(SPI_KERCHUNK_CONTAINER)
+    except FileNotFoundError:
+        return []
+    
+    json_blobs = [
+        e for e in entries
+        if e.endswith(".json") and SPI_KERCHUNK_PREFIX in e.split("/")[-1]
+    ]
+    
+    available_dates = []
+    for blob_path in json_blobs:
+        filename = blob_path.split("/")[-1]
+        date_match = re.search(r'SPI3_(\d{6})\.', filename)
+        if date_match:
+            date_str = date_match.group(1)
+            try:
+                year = int(date_str[:4])
+                month = int(date_str[4:6])
+                dt = datetime(year, month, 1)
+                
+                available_dates.append({
+                    "date": dt,
+                    "filename": filename,
+                    "spi_format": date_str,
+                    "path": blob_path
+                })
+            except ValueError:
+                continue
+    
+    available_dates.sort(key=lambda x: x["date"])
+    return available_dates
+
+def load_specific_month_spi_kerchunk(account_name: str, account_key: str, year: int, month: int):
+    """
+    Load SPI kerchunk data for a specific month (format: YYYYMM)
+    """
+    # Format as YYYYMM
+    spi_date = f"{year:04d}{month:02d}"
+    
+    # Validate inputs
+    if month < 1 or month > 12:
+        raise ValueError(f"Month must be 1-12. Requested: {month}")
+    
+    # Build expected filename
+    expected_filename = f"kerchunk_SPI3_{spi_date}.json"
+    expected_path = f"{SPI_KERCHUNK_CONTAINER}/{expected_filename}"
+    
+    try:
+        # Get list of available SPI dates
+        available_dates = find_available_spi_files(account_name, account_key)
+        
+        if available_dates:
+            first_date = available_dates[0]['date']
+            last_date = available_dates[-1]['date']
+            total_months = len(available_dates)
+            logging.info(f"📅 SPI data available: {first_date.strftime('%Y-%m')} to {last_date.strftime('%Y-%m')} ({total_months} months)")
+        
+        # Try to load the exact file
+        fs = _kerchunk_fs(account_name, account_key)
+        
+        if fs.exists(expected_path):
+            logging.info(f"✅ Found SPI file: {expected_filename}")
+            refs, blob_used, is_combined = _discover_kerchunk_index_for_date(account_name, account_key, expected_path)
+        else:
+            # Find closest available month
+            target_dt = datetime(year, month, 1)
+            if available_dates:
+                closest = min(available_dates, key=lambda x: abs((x["date"] - target_dt).days))
+                days_diff = abs((closest["date"] - target_dt).days)
+                
+                if days_diff > 90:  # More than ~3 months away
+                    available_range = f"{available_dates[0]['date'].strftime('%Y-%m')} to {available_dates[-1]['date'].strftime('%Y-%m')}"
+                    raise FileNotFoundError(
+                        f"SPI data for {year:04d}-{month:02d} not available. "
+                        f"Closest is {closest['date'].strftime('%Y-%m')} ({days_diff} days away). "
+                        f"Available range: {available_range}"
+                    )
+                
+                # Use closest month
+                expected_path = closest["path"]
+                expected_filename = closest["filename"]
+                logging.info(f"Using closest SPI month: {closest['date'].strftime('%Y-%m')} (requested: {year:04d}-{month:02d})")
+                
+                refs, blob_used, is_combined = _discover_kerchunk_index_for_date(account_name, account_key, expected_path)
+            else:
+                raise FileNotFoundError(f"No SPI kerchunk data found in {SPI_KERCHUNK_CONTAINER}")
+        
+        # Create the dataset
+        debug = {
+            "kerchunk_container": SPI_KERCHUNK_CONTAINER,
+            "kerchunk_blob_used": blob_used,
+            "data_type": "spi_monthly",
+            "requested_month": f"{year:04d}-{month:02d}",
+            "available_range": f"{available_dates[0]['date'].strftime('%Y-%m')} to {available_dates[-1]['date'].strftime('%Y-%m')}" if available_dates else "unknown"
+        }
+
+        mapper = fsspec.get_mapper(
+            "reference://",
+            fo=refs,
+            remote_protocol="az",
+            remote_options={"account_name": account_name, "account_key": account_key},
+        )
+
+        ds = xr.open_dataset(mapper, engine="zarr", backend_kwargs={"consolidated": False})
+        return ds, debug
+        
+    except Exception as e:
+        error_msg = f"Failed to load SPI data for {year:04d}-{month:02d}: {str(e)}"
+        logging.error(error_msg)
+        raise Exception(error_msg)
+
