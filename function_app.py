@@ -98,6 +98,17 @@ try:
     except ImportError as weather_error:
         logger.warning(f"⚠️ Could not import weather handler: {weather_error}")
         handle_weather_function_call = None
+
+    # Import Azure Maps detector
+    try:
+        from agents.azure_maps_detector import AzureMapsDetector
+        from agents.azure_maps_agent import AzureMapsAgent
+        AZURE_MAPS_AVAILABLE = True
+        azure_maps_detector = AzureMapsDetector()
+    except ImportError:
+        AZURE_MAPS_AVAILABLE = False
+        azure_maps_detector = None
+        logger.warning("Azure Maps modules not available")
     
     logger.info("🎉 Core agent modules imported successfully")
     
@@ -197,6 +208,41 @@ def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
                 status_code=503,
                 mimetype="application/json"
             )
+
+        # NEW: Check for Azure Maps request before regular processing
+        user_query = data.get("query", data.get("input", ""))
+        
+        if AZURE_MAPS_AVAILABLE and azure_maps_detector and "azure maps" in user_query.lower():
+            logger.info("🗺️ Routing to Azure Maps handler")
+            try:
+                # Get Azure Maps subscription key from environment or config
+                azure_maps_key = os.environ.get('AZURE_MAPS_SUBSCRIPTION_KEY', 'your-key-here')
+                azure_maps_agent = AzureMapsAgent(azure_maps_key)
+                
+                # Detect what type of analysis is needed
+                detection_result = azure_maps_detector.detect(user_query)
+                
+                if detection_result['requires_maps']:
+                    # Create request template
+                    map_request = azure_maps_detector.get_map_request_template(detection_result)
+                    map_request['user_query'] = user_query
+                    
+                    # Process the request
+                    maps_response = azure_maps_agent.process_request(map_request)
+                    
+                    return func.HttpResponse(
+                        safe_json_dumps({
+                            "response": maps_response,
+                            "type": "azure_maps",
+                            "detection": detection_result
+                        }),
+                        status_code=200,
+                        mimetype="application/json"
+                    )
+                
+            except Exception as maps_error:
+                logger.error(f"Azure Maps processing failed: {maps_error}")
+                # Continue to regular processing
 
         # Enhanced chat request handling
         try:

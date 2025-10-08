@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>NLDAS Weather Analysis</title>
+    
+    <!-- Azure Maps SDK -->
+    <link rel="stylesheet" href="https://atlas.microsoft.com/sdk/javascript/mapcontrol/2/atlas.min.css" />
+    <script src="https://atlas.microsoft.com/sdk/javascript/mapcontrol/2/atlas.min.js"></script>
+    
+    <!-- Your Azure Maps frontend code -->
+    <script src="azure_maps_frontend.js"></script>
+</head>
+<body>
+    <div>
+        <input type="text" id="search-input" placeholder="Enter your weather query..." style="width: 60%; padding: 10px;" />
+        <button onclick="handleUserQuery()" style="padding: 10px;">Submit</button>
+    </div>
+    
+    <div id="result-container" style="margin-top: 20px;">
+        <!-- Results will appear here -->
+    </div>
+    
+    <!-- Your main JavaScript -->
+    <script src="frontend_integration.js"></script>
+</body>
+</html>

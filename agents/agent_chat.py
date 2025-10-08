@@ -6,6 +6,12 @@ import json
 import logging
 import time
 from .dynamic_code_generator import execute_custom_code
+from .azure_maps_detector import AzureMapsDetector
+from .azure_maps_agent import handle_azure_maps_chat
+
+def detect_azure_maps_request(user_query: str) -> bool:
+    """Simple function to detect Azure Maps requests."""
+    return "azure maps" in user_query.lower()
 
 # Load agent info (keep existing code)
 agent_info_path = os.path.join(os.path.dirname(__file__), "../agent_info.json")
@@ -46,11 +52,23 @@ def _get_run(thread_id: str, run_id: str):
 
 def handle_chat_request(data):
     """
-    ULTRA-DIRECT: Immediate function execution
+    ULTRA-DIRECT: Immediate function execution with Azure Maps detection
     """
     try:
         user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
         logging.info(f"Processing chat request: {user_query}")
+
+        # NEW: Check for Azure Maps request first
+        if detect_azure_maps_request(user_query):
+            logging.info("🗺️ Detected Azure Maps request - routing to Azure Maps handler")
+            try:
+                maps_response = handle_azure_maps_chat(user_query, project_client)
+                logging.info(f"✅ Azure Maps response: {maps_response}")
+                return maps_response
+            except Exception as maps_error:
+                logging.error(f"Azure Maps handler failed: {maps_error}")
+                # Fall back to regular processing
+                logging.info("Falling back to regular agent processing")
 
         # Create a thread for the conversation
         thread = project_client.agents.threads.create()
