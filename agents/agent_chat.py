@@ -5,7 +5,9 @@ import os
 import json
 import logging
 import time
+import re
 from .dynamic_code_generator import execute_custom_code
+from .dataset_metadata import build_coverage_response
 
 # Load agent info (keep existing code)
 agent_info_path = os.path.join(os.path.dirname(__file__), "../agent_info.json")
@@ -44,6 +46,63 @@ def _get_run(thread_id: str, run_id: str):
         return runs_ops.retrieve_run(thread_id=thread_id, run_id=run_id)
     raise AttributeError("RunsOperations has no get/get_run/retrieve_run")
 
+VALID_VARIABLE_ALIASES = {
+    "temperature": ["temperature","temp","tair"],
+    "precipitation": ["precipitation","precip","rain","rainfall","rainf"],
+    "spi": ["spi","drought","spi3"],
+    "humidity": ["humidity","qair"],
+    "wind": ["wind","wind_n","wind_e"],
+    "pressure": ["pressure","psurf"],
+    "solar": ["solar","shortwave","swdown"],
+    "longwave": ["longwave","lwdown"]
+}
+# Simple canonical mapping
+VARIABLE_CANON = {alias: canon for canon, aliases in VALID_VARIABLE_ALIASES.items() for alias in aliases}
+
+US_STATE_LIKE = [
+    "alabama","alaska","arizona","arkansas","california","colorado","connecticut","delaware",
+    "florida","georgia","hawaii","idaho","illinois","indiana","iowa","kansas","kentucky","louisiana",
+    "maine","maryland","massachusetts","michigan","minnesota","mississippi","missouri","montana",
+    "nebraska","nevada","new hampshire","new jersey","new mexico","new york","north carolina",
+    "north dakota","ohio","oklahoma","oregon","pennsylvania","rhode island","south carolina",
+    "south dakota","tennessee","texas","utah","vermont","virginia","washington","west virginia",
+    "wisconsin","wyoming"
+]
+
+COVERAGE_PATTERNS = [
+    r"\bhow\s+many\s+years\b",
+    r"\bdata\s+cover(age|s)\b",
+    r"\bwhat\s+years\b",
+    r"\bdata\s+range\b",
+    r"\bavailable\s+years\b",
+    r"\bhourly\s+data\b",
+    r"\bdaily\s+data\b",
+    r"\bdo\s+you\s+have\s+hourly\b",
+    r"\bdo\s+you\s+have\s+daily\b",
+    r"\bspi\s+years\b",
+    r"\bfrom\s+what\s+year\b",
+    r"\bwhich\s+years\b",
+    # NEW broader paraphrases
+    r"\bhow\s+long\b",
+    r"\btime\s+span\b",
+    r"\btime\s+range\b",
+    r"\bcoverage\s+period\b",
+    r"\byears\s+of\s+(data|coverage)\b",
+    r"\bdata\s+available\b",
+    r"\bavailable\s+data\b",
+    r"\bhave\s+in\s+your\s+database\b"
+]
+
+def is_coverage_query(q: str) -> bool:
+    ql = q.lower()
+    # Regex patterns
+    if any(re.search(pat, ql) for pat in COVERAGE_PATTERNS):
+        return True
+    # Heuristic fallback (captures many paraphrases)
+    if ('year' in ql or 'years' in ql) and 'data' in ql and any(tok in ql for tok in ['how','what','which','available','have','range','span']):
+        return True
+    return False
+
 def handle_chat_request(data):
     """
     ULTRA-DIRECT: Immediate function execution with Azure Maps detection
@@ -52,26 +111,54 @@ def handle_chat_request(data):
         user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
         logging.info(f"Processing chat request: {user_query}")
 
+        # NEW: Coverage / availability shortcut
+        if is_coverage_query(user_query):
+            logging.info("Detected coverage / availability query; returning metadata without tool execution.")
+            coverage = build_coverage_response()
+            return {
+                "status": "coverage_info",
+                "content": coverage["summary"],
+                "coverage": coverage,
+                "agent_id": text_agent_id
+            }
+
+        # NEW: Lightweight heuristic signals for prompt conditioning
+        q_lower = user_query.lower()
+        has_var = any(k in q_lower for k in ["temperature","tair","precip","rain","rainf","humidity","qair","spi","drought","wind","pressure","psurf"])
+        has_place = any(k in q_lower for k in ["florida","alaska","california","michigan","texas","ohio","virginia","colorado","arizona","georgia","maryland","nevada","oregon","washington"])
+        has_date_token = any(tok in q_lower for tok in [" 2020"," 2021"," 2022"," 2023"," jan"," feb"," mar"," apr"," may"," jun"," jul"," aug"," sep"," oct"," nov"," dec"])
+        minimal_context = not (has_var and (has_place or has_date_token))
+
         # Create a thread for the conversation
         thread = project_client.agents.threads.create()
         logging.info(f"Created thread: {thread.id}")
-        
-        # ULTRA-DIRECT: Force immediate function call
-        enhanced_query = f"""IMMEDIATE ACTION REQUIRED: {user_query}
 
-You MUST call execute_custom_code function RIGHT NOW. No thinking, no explanations.
+        # UPDATED PROMPT: Only call execute_custom_code if query is actionable
+        enhanced_query = f"""You are an NLDAS-3 hydrometeorological assistant.
 
-Example for ANY request:
-{{
-  "python_code": "import builtins\\nds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)\\ndata = ds['Tair'].sel(lat=builtins.slice(58, 72), lon=builtins.slice(-180, -120)).mean()\\ntemp_c = float(data.values) - 273.15\\nds.close()\\nresult = f'Alaska temperature: {{temp_c:.1f}}°C'",
-  "user_request": "{user_query}"
-}}
+USER QUERY: \"{user_query}\"
 
-CALL execute_custom_code NOW!"""
+DECISION RULES:
+1. If the query is greetings, casual chat, or unrelated to NLDAS / weather / drought -> Reply briefly and ask the user to specify a variable (temperature, precipitation, SPI, drought) plus a location and date. DO NOT call execute_custom_code.
+2. If the query lacks required info (missing variable OR missing location/date), respond with a one-sentence clarification request listing exactly what is missing. DO NOT call execute_custom_code.
+3. ONLY call execute_custom_code when the query clearly specifies (a) target variable (e.g. temperature / SPI / precipitation), and (b) spatial region (state or bounding concept) or (c) date / month / range.
+4. When you do call execute_custom_code you MUST provide a JSON with python_code and user_request, returning a proper result dict with static_url + overlay_url etc.
+5. NEVER guess ambiguous dates or regions—ask instead.
+
+ACTIONABILITY ASSESSMENT (heuristic pre-analysis):
+- variable_detected: {has_var}
+- location_detected: {has_place}
+- date_token_detected: {has_date_token}
+- minimal_context: {minimal_context}
+
+If rules 1 or 2 apply: answer directly, no tool call.
+If rule 3 applies: call execute_custom_code.
+
+Respond now following the rules above."""
 
         message = project_client.agents.messages.create(
             thread_id=thread.id,
-            role="user", 
+            role="user",
             content=enhanced_query
         )
         logging.info(f"Created message: {message.id}")
@@ -422,8 +509,25 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                 logging.error(f"❌ Get run error: {e}")
                 break
         
-        # Enhanced final status logging
+        # Enhanced final status handling (REPLACE original block that logged failure)
         final_status = run.status if 'run' in locals() else "unknown"
+        if final_status == "completed" and not custom_code_executed:
+            logging.info("✅ Run completed without tool execution; returning assistant reply.")
+            assistant_reply = extract_last_assistant_message(thread.id)
+            return {
+                "status": "assistant_reply",
+                "content": assistant_reply or "I can help with NLDAS-3 data. Specify a variable, location and date.",
+                "agent_id": text_agent_id,
+                "thread_id": thread.id,
+                "debug": {
+                    "iterations": iteration,
+                    "elapsed_time": elapsed_time,
+                    "custom_code_executed": False,
+                    "final_status": final_status
+                }
+            }
+
+        # (Keep existing fallback but move after the new completion branch)
         logging.error(f"❌ Agent completion without execution:")
         logging.error(f"   Final status: {final_status}")
         logging.error(f"   Iterations: {iteration}/{max_iterations}")
@@ -622,3 +726,25 @@ def bounds_center(bounds: dict):
         ]
     except Exception:
         return [-98.0, 39.0]
+
+# NEW: helper to extract last assistant message if no tool used
+def extract_last_assistant_message(thread_id: str) -> str:
+    try:
+        msgs = project_client.agents.messages.list(thread_id=thread_id)
+        # SDK list ordering may vary; ensure we look from newest
+        candidate = None
+        for m in reversed(list(msgs)):
+            if getattr(m, "role", None) == "assistant":
+                parts = []
+                for c in getattr(m, "content", []):
+                    # Each content item may be text / other types
+                    text_val = getattr(c, "text", None)
+                    if text_val:
+                        parts.append(getattr(text_val, "value", "") or str(text_val))
+                candidate = "\n".join(p for p in parts if p).strip()
+                if candidate:
+                    break
+        return candidate
+    except Exception as e:
+        logging.warning(f"Could not extract assistant message: {e}")
+        return None
