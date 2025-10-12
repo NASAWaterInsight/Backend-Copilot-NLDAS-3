@@ -3,6 +3,9 @@ import logging
 from typing import Dict, List, Any, Optional
 from .azure_maps_generator import AzureMapsGenerator
 
+# DEPRECATED: AzureMapsAgent no longer used after unifying static + Azure Maps workflows.
+# Static map generation plus post-processing wrapper now supplies overlay/geojson.
+
 class AzureMapsAgent:
     """Agent for handling Azure Maps requests using direct data processing and generating transparent PNG overlays."""
     
@@ -285,33 +288,57 @@ class AzureMapsAgent:
             'year': 2023,  # Default
             'month': 5,    # Default to May
             'day': 12,     # Default
-            'region': 'florida',
-            'lat_min': 24.5,
+            'region': 'florida',  # Default region
+            'lat_min': 24.5,     # Default coordinates (Florida)
             'lat_max': 31.0,
             'lon_min': -87.6,
             'lon_max': -80.0
         }
         
-        # Extract variable
-        from .weather_tool import VARIABLE_MAPPING
-        for common_name, nldas_name in VARIABLE_MAPPING.items():
-            if common_name in query_lower:
-                params['variable'] = nldas_name
-                break
+        # Check for SPI/drought keywords first
+        spi_keywords = ["spi", "drought", "standardized precipitation index"]
+        if any(keyword in query_lower for keyword in spi_keywords):
+            params['variable'] = 'SPI3'
+            params['is_spi_request'] = True
+        else:
+            # Extract other variables
+            try:
+                from .weather_tool import VARIABLE_MAPPING
+                for common_name, nldas_name in VARIABLE_MAPPING.items():
+                    if common_name in query_lower:
+                        params['variable'] = nldas_name
+                        break
+            except ImportError:
+                logging.warning("Could not import VARIABLE_MAPPING from weather_tool")
         
-        # Extract region
-        region_coords = {
-            'florida': {'lat_min': 24.5, 'lat_max': 31.0, 'lon_min': -87.6, 'lon_max': -80.0},
-            'maryland': {'lat_min': 37.9, 'lat_max': 39.7, 'lon_min': -79.5, 'lon_max': -75.0},
-            'california': {'lat_min': 32.0, 'lat_max': 42.0, 'lon_min': -125.0, 'lon_max': -114.0},
-            'alaska': {'lat_min': 58.0, 'lat_max': 72.0, 'lon_min': -180.0, 'lon_max': -120.0}
-        }
+        # USE THE SAME LOCATION DETECTION AS STATIC MAPS
+        try:
+            from .weather_tool import extract_location_from_query
+            
+            # Use the same function that static maps use
+            location_result = extract_location_from_query(user_query)
+            
+            if location_result and 'coordinates' in location_result:
+                coords = location_result['coordinates']
+                params['lat_min'] = coords['lat_min']
+                params['lat_max'] = coords['lat_max'] 
+                params['lon_min'] = coords['lon_min']
+                params['lon_max'] = coords['lon_max']
+                params['region'] = location_result.get('region', 'detected_location')
+                
+                logging.info(f"🗺️ Used dynamic location detection: {location_result.get('location_name', 'Unknown')}")
+            else:
+                # Fallback to manual region detection
+                logging.warning("🗺️ Dynamic location detection failed, using manual region detection")
+                self._manual_region_detection(query_lower, params)
+                
+        except ImportError:
+            logging.warning("Could not import extract_location_from_query, using manual detection")
+            self._manual_region_detection(query_lower, params)
         
-        for region, coords in region_coords.items():
-            if region in query_lower:
-                params['region'] = region
-                params.update(coords)
-                break
+        # Debug logging
+        logging.info(f"🗺️ Final extracted region: {params['region']}")
+        logging.info(f"🗺️ Final coordinates: lat {params['lat_min']}-{params['lat_max']}, lon {params['lon_min']}-{params['lon_max']}")
         
         # Extract date
         import re
@@ -343,58 +370,144 @@ class AzureMapsAgent:
         
         return params
     
+    def _manual_region_detection(self, query_lower: str, params: Dict[str, Any]):
+        """Manual region detection as fallback"""
+        try:
+            from .weather_tool import REGIONS
+            
+            # Try to find region in query using the same logic as weather_tool
+            detected_region = None
+            for region_name, region_data in REGIONS.items():
+                if region_name.lower() in query_lower:
+                    detected_region = region_name
+                    params['region'] = region_name.lower()
+                    params['lat_min'] = region_data['lat_min']
+                    params['lat_max'] = region_data['lat_max']
+                    params['lon_min'] = region_data['lon_min']
+                    params['lon_max'] = region_data['lon_max']
+                    break
+            
+            # If no region found, try additional regions
+            if not detected_region:
+                additional_regions = {
+                    'michigan': {'lat_min': 41.7, 'lat_max': 48.2, 'lon_min': -90.4, 'lon_max': -82.1},
+                    'east lansing': {'lat_min': 42.7, 'lat_max': 42.8, 'lon_min': -84.6, 'lon_max': -84.4},
+                    'new york': {'lat_min': 40.5, 'lat_max': 45.0, 'lon_min': -79.8, 'lon_max': -71.9},
+                    'pennsylvania': {'lat_min': 39.7, 'lat_max': 42.5, 'lon_min': -80.5, 'lon_max': -74.7},
+                    'illinois': {'lat_min': 36.9, 'lat_max': 42.5, 'lon_min': -91.5, 'lon_max': -87.0},
+                    'ohio': {'lat_min': 38.4, 'lat_max': 42.0, 'lon_min': -84.8, 'lon_max': -80.5},
+                    'georgia': {'lat_min': 30.4, 'lat_max': 35.0, 'lon_min': -85.6, 'lon_max': -80.8},
+                    'north carolina': {'lat_min': 33.8, 'lat_max': 36.6, 'lon_min': -84.3, 'lon_max': -75.5},
+                    'virginia': {'lat_min': 36.5, 'lat_max': 39.5, 'lon_min': -83.7, 'lon_max': -75.2},
+                    'washington': {'lat_min': 45.5, 'lat_max': 49.0, 'lon_min': -124.8, 'lon_max': -116.9},
+                    'oregon': {'lat_min': 41.9, 'lat_max': 46.3, 'lon_min': -124.6, 'lon_max': -116.5},
+                    'nevada': {'lat_min': 35.0, 'lat_max': 42.0, 'lon_min': -120.0, 'lon_max': -114.0},
+                    'arizona': {'lat_min': 31.3, 'lat_max': 37.0, 'lon_min': -114.8, 'lon_max': -109.0},
+                    'colorado': {'lat_min': 36.9, 'lat_max': 41.0, 'lon_min': -109.1, 'lon_max': -102.0},
+                    'utah': {'lat_min': 37.0, 'lat_max': 42.0, 'lon_min': -114.1, 'lon_max': -109.0}
+                }
+                
+                for region_name, coords in additional_regions.items():
+                    if region_name in query_lower:
+                        params['region'] = region_name.replace(' ', '_')
+                        params.update(coords)
+                        detected_region = region_name
+                        break
+                        
+        except ImportError:
+            logging.warning("Could not import REGIONS from weather_tool, using basic fallback")
+            # Very basic fallback
+            if 'michigan' in query_lower or 'lansing' in query_lower:
+                params.update({
+                    'region': 'michigan',
+                    'lat_min': 41.7, 'lat_max': 48.2, 
+                    'lon_min': -90.4, 'lon_max': -82.1
+                })
+
     def _fetch_weather_data_directly(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Fetch weather data directly using weather_tool functions."""
         try:
             from .weather_tool import (
                 get_account_key, 
-                load_specific_date_kerchunk, 
+                load_specific_date_kerchunk,
+                load_specific_month_spi_kerchunk,  # Add SPI loading function
                 ACCOUNT_NAME
             )
             import builtins
             
             account_key = get_account_key()
             
-            # Load NLDAS data
-            ds, debug_info = load_specific_date_kerchunk(
-                ACCOUNT_NAME, account_key, params['year'], params['month'], params['day']
-            )
+            # Check if this is an SPI request
+            is_spi_request = params.get('is_spi_request', False) or params['variable'] == 'SPI3'
             
-            # Extract data for the region
-            data = ds[params['variable']].sel(
-                lat=builtins.slice(params['lat_min'], params['lat_max']),
-                lon=builtins.slice(params['lon_min'], params['lon_max'])
-            )
-            
-            # Process based on variable type
-            if params['variable'] == 'Rainf':
-                # Sum precipitation over time
-                processed_data = data.sum(dim='time')
-                unit = 'mm'
-            elif params['variable'] == 'Tair':
-                # Average temperature and convert to Celsius
-                processed_data = data.mean(dim='time') - 273.15
-                unit = '°C'
+            if is_spi_request:
+                # Use SPI monthly data
+                ds, debug_info = load_specific_month_spi_kerchunk(
+                    ACCOUNT_NAME, account_key, params['year'], params['month']
+                )
+                
+                # Extract SPI data using correct coordinate names
+                data = ds['SPI3'].sel(
+                    latitude=builtins.slice(params['lat_min'], params['lat_max']),
+                    longitude=builtins.slice(params['lon_min'], params['lon_max'])
+                )
+                
+                # Process SPI data
+                processed_data = data.mean(dim='time') if 'time' in data.dims else data
+                unit = 'SPI'
+                
+                # Use latitude/longitude for SPI data
+                center_lon = float((processed_data.longitude.min() + processed_data.longitude.max()) / 2)
+                center_lat = float((processed_data.latitude.min() + processed_data.latitude.max()) / 2)
+                
+                weather_data = {
+                    'data_values': processed_data.values.tolist(),
+                    'longitude': processed_data.longitude.values.tolist(),
+                    'latitude': processed_data.latitude.values.tolist(),
+                    'variable': 'SPI3',
+                    'unit': unit,
+                    'date': f"{params['year']}-{params['month']:02d}",
+                    'region': params['region'],
+                    'center': [center_lon, center_lat]
+                }
+                
             else:
-                # Average for other variables
-                processed_data = data.mean(dim='time')
-                unit = ds[params['variable']].attrs.get('units', 'unknown')
-            
-            # Calculate center coordinates
-            center_lon = float((processed_data.lon.min() + processed_data.lon.max()) / 2)
-            center_lat = float((processed_data.lat.min() + processed_data.lat.max()) / 2)
-            
-            # Convert to format needed for frontend
-            weather_data = {
-                'data_values': processed_data.values.tolist(),
-                'longitude': processed_data.lon.values.tolist(),
-                'latitude': processed_data.lat.values.tolist(),
-                'variable': params['variable'],
-                'unit': unit,
-                'date': f"{params['year']}-{params['month']:02d}-{params['day']:02d}",
-                'region': params['region'],
-                'center': [center_lon, center_lat]
-            }
+                # Use regular daily NLDAS data (existing code)
+                ds, debug_info = load_specific_date_kerchunk(
+                    ACCOUNT_NAME, account_key, params['year'], params['month'], params['day']
+                )
+                
+                # Extract data for the region
+                data = ds[params['variable']].sel(
+                    lat=builtins.slice(params['lat_min'], params['lat_max']),
+                    lon=builtins.slice(params['lon_min'], params['lon_max'])
+                )
+                
+                # Process based on variable type
+                if params['variable'] == 'Rainf':
+                    processed_data = data.sum(dim='time')
+                    unit = 'mm'
+                elif params['variable'] == 'Tair':
+                    processed_data = data.mean(dim='time') - 273.15
+                    unit = '°C'
+                else:
+                    processed_data = data.mean(dim='time')
+                    unit = ds[params['variable']].attrs.get('units', 'unknown')
+                
+                # Use lat/lon for regular data
+                center_lon = float((processed_data.lon.min() + processed_data.lon.max()) / 2)
+                center_lat = float((processed_data.lat.min() + processed_data.lat.max()) / 2)
+                
+                weather_data = {
+                    'data_values': processed_data.values.tolist(),
+                    'longitude': processed_data.lon.values.tolist(),
+                    'latitude': processed_data.lat.values.tolist(),
+                    'variable': params['variable'],
+                    'unit': unit,
+                    'date': f"{params['year']}-{params['month']:02d}-{params['day']:02d}",
+                    'region': params['region'],
+                    'center': [center_lon, center_lat]
+                }
             
             ds.close()
             return weather_data

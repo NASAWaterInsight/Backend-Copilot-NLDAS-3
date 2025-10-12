@@ -341,25 +341,101 @@ lon_min, lon_max = -87.6, -80.0
 ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 21)
 data = ds['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).sum(dim='time')
 fig, ax = create_cartopy_map(data.lon, data.lat, data.values, 'Precipitation', 'Precipitation (mm)', 'Blues')
-url = save_plot_to_blob_simple(fig, 'precip.png', account_key)
-plt.close(fig)
-ds.close()
-result = url
+static_url = save_plot_to_blob_simple(fig, 'precip_static.png', account_key)
+# Transparent overlay
+fig2 = plt.figure(figsize=(10,8), frameon=False, dpi=200)
+fig2.patch.set_alpha(0)
+ax2 = fig2.add_axes([0,0,1,1]); ax2.set_axis_off(); ax2.set_facecolor('none')
+ax2.set_xlim(lon_min, lon_max); ax2.set_ylim(lat_min, lat_max)
+lon_grid, lat_grid = np.meshgrid(data.lon, data.lat)
+masked = np.ma.masked_invalid(data.values)
+ax2.pcolormesh(lon_grid, lat_grid, masked, cmap='Blues', shading='auto', alpha=0.9)
+overlay_url = save_plot_to_blob_simple(fig2, 'precip_overlay.png', account_key)
+# Build lightweight GeoJSON sample (every 4th point)
+geo_features = []
+lon_vals = data.lon.values
+lat_vals = data.lat.values
+vals = data.values
+for i in range(0, len(lat_vals), max(1, len(lat_vals)//25 or 1)):
+    for j in range(0, len(lon_vals), max(1, len(lon_vals)//25 or 1)):
+        v = float(vals[i, j])
+        if np.isfinite(v):
+            geo_features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [float(lon_vals[j]), float(lat_vals[i])]},
+                "properties": {"value": v, "variable": "precipitation", "unit": "mm"}
+            })
+geojson = {"type": "FeatureCollection", "features": geo_features}
+center_lon = float((lon_min + lon_max)/2)
+center_lat = float((lat_min + lat_max)/2)
+bounds = {"north": float(lat_max), "south": float(lat_min), "east": float(lon_max), "west": float(lon_min)}
+map_config = {"center": [center_lon, center_lat], "zoom": 6, "style": "satellite", "overlay_mode": True}
+plt.close(fig); plt.close(fig2); ds.close()
+result = {
+    "static_url": static_url,
+    "overlay_url": overlay_url,
+    "geojson": geojson,
+    "bounds": bounds,
+    "map_config": map_config
+}
 ```
 
-FOR SINGLE TEMPERATURE MAPS - copy this pattern:
+FOR SINGLE TEMPERATURE MAPS - copy this pattern (NOW WITH static_url + overlay_url):
 ```python
-import builtins
-# Use coordinates for requested region  
-lat_min, lat_max = 24.5, 31.0  # Example: Florida
+import builtins, json, numpy as np
+lat_min, lat_max = 24.5, 31.0
 lon_min, lon_max = -87.6, -80.0
 ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 15)
 data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).mean(dim='time') - 273.15
-fig, ax = create_cartopy_map(data.lon, data.lat, data.values, 'Temperature', 'Temperature (°C)', 'RdYlBu_r')
-url = save_plot_to_blob_simple(fig, 'temp.png', account_key)
-plt.close(fig)
-ds.close()
-result = url
+
+# STATIC FIG (with title/colorbar)
+fig, ax = create_cartopy_map(data.lon, data.lat, data.values,
+                             'Temperature', 'Temperature (°C)', 'RdYlBu_r')
+static_url = save_plot_to_blob_simple(fig, 'temp_static.png', account_key)
+
+# TRANSPARENT OVERLAY FIG (no axes / no colorbar) for Azure Maps
+import matplotlib.pyplot as plt
+fig2 = plt.figure(figsize=(10, 8), frameon=False, dpi=200)
+fig2.patch.set_alpha(0)
+ax2 = fig2.add_axes([0,0,1,1])
+ax2.set_axis_off()
+ax2.set_facecolor('none')
+ax2.set_xlim(lon_min, lon_max)
+ax2.set_ylim(lat_min, lat_max)
+from matplotlib import cm
+lon_grid, lat_grid = np.meshgrid(data.lon, data.lat)
+masked = np.ma.masked_invalid(data.values)
+ax2.pcolormesh(lon_grid, lat_grid, masked, cmap='RdYlBu_r', shading='auto', alpha=0.9)
+overlay_url = save_plot_to_blob_simple(fig2, 'temp_overlay.png', account_key)
+
+# GEOJSON SAMPLE
+geo_features = []
+lon_vals = data.lon.values
+lat_vals = data.lat.values
+vals = data.values
+for i in range(0, len(lat_vals), max(1, len(lat_vals)//25 or 1)):
+    for j in range(0, len(lon_vals), max(1, len(lon_vals)//25 or 1)):
+        v = float(vals[i, j])
+        if np.isfinite(v):
+            geo_features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [float(lon_vals[j]), float(lat_vals[i])]},
+                "properties": {"value": v, "variable": "temperature", "unit": "°C"}
+            })
+geojson = {"type": "FeatureCollection", "features": geo_features}
+center_lon = float((lon_min + lon_max)/2)
+center_lat = float((lat_min + lat_max)/2)
+bounds = {"north": float(lat_max), "south": float(lat_min), "east": float(lon_max), "west": float(lon_min)}
+map_config = {"center": [center_lon, center_lat], "zoom": 6, "style": "satellite", "overlay_mode": True}
+
+plt.close(fig); plt.close(fig2); ds.close()
+result = {
+    "static_url": static_url,
+    "overlay_url": overlay_url,
+    "geojson": geojson,
+    "bounds": bounds,
+    "map_config": map_config
+}
 ```
 
 FOR ANIMATIONS - copy this pattern:
@@ -388,23 +464,71 @@ except Exception as e:
     result = f"Animation failed, showing static map: {url}"
 ```
 
-OPTIONAL CITY LABELS (no gray fill):
-To include city names on a map add: region_name='Florida' (or 'Maryland','California','Michigan','Alaska') and show_cities=True
-Example:
+FOR SPI MAPS (DUAL OUTPUT):
 ```python
-import builtins
-ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 9, 30)
-data = ds['Tair'].sel(lat=builtins.slice(37.9, 39.7), lon=builtins.slice(-79.5, -75.0)).mean(dim='time') - 273.15
-fig, ax = create_cartopy_map(data.lon, data.lat, data.values,
-                             'Temperature with Cities',
-                             'Temperature (°C)', 'RdYlBu_r',
-                             region_name='region', show_cities=True)
-url = save_plot_to_blob_simple(fig, 'temp_cities.png', account_key)
-plt.close(fig); ds.close(); result = url
-```
-If user explicitly asks for city names or labels, use show_cities=True.
+import builtins, json, numpy as np
+lat_min, lat_max = 32.0, 42.0
+lon_min, lon_max = -125.0, -114.0
+ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2020, 5)
+data = ds['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
+if hasattr(data, 'squeeze'): data = data.squeeze()
+fig, ax = create_spi_map_with_categories(data.longitude, data.latitude, data.values,
+                                         'California SPI - May 2020', region_name='california')
+static_url = save_plot_to_blob_simple(fig, 'spi_static.png', account_key)
 
-ALWAYS set 'result' variable. Use exact patterns above."""
+# Transparent overlay (no axes)
+fig2 = plt.figure(figsize=(10,8), frameon=False, dpi=200)
+fig2.patch.set_alpha(0)
+ax2 = fig2.add_axes([0,0,1,1]); ax2.set_axis_off(); ax2.set_facecolor('none')
+ax2.set_xlim(lon_min, lon_max); ax2.set_ylim(lat_min, lat_max)
+lon_grid, lat_grid = np.meshgrid(data.longitude, data.latitude)
+masked = np.ma.masked_invalid(data.values)
+import matplotlib.colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap
+colors = ['#8B0000','#FF0000','#FF4500','#FFA500','#FFFF00','#FFFFFF80','#87CEEB','#4169E1','#0000FF']
+cmap = LinearSegmentedColormap.from_list('spi_overlay', colors, N=256)
+ax2.pcolormesh(lon_grid, lat_grid, masked, cmap=cmap, vmin=-2.5, vmax=2.5, shading='auto', alpha=0.9)
+overlay_url = save_plot_to_blob_simple(fig2, 'spi_overlay.png', account_key)
+
+# GEOJSON SAMPLE
+geo_features = []
+lon_vals = data.longitude.values
+lat_vals = data.latitude.values
+vals = data.values
+for i in range(0, len(lat_vals), max(1, len(lat_vals)//25 or 1)):
+    for j in range(0, len(lon_vals), max(1, len(lon_vals)//25 or 1)):
+        v = float(vals[i, j])
+        if np.isfinite(v):
+            geo_features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [float(lon_vals[j]), float(lat_vals[i])]},
+                "properties": {"spi": v}
+            })
+geojson = {"type": "FeatureCollection", "features": geo_features}
+center_lon = float((lon_min + lon_max)/2)
+center_lat = float((lat_min + lat_max)/2)
+bounds = {"north": float(lat_max), "south": float(lat_min), "east": float(lon_max), "west": float(lon_min)}
+map_config = {"center": [center_lon, center_lat], "zoom": 5, "style": "satellite", "overlay_mode": True}
+plt.close(fig); plt.close(fig2); ds.close()
+result = {
+    "static_url": static_url,
+    "overlay_url": overlay_url,
+    "geojson": geojson,
+    "bounds": bounds,
+    "map_config": map_config
+}
+```
+
+RULE UPDATE (REPLACE PRIOR RULE):
+FOR ANY MAP RESULT you MUST return a dict with:
+- static_url (annotated figure with legend/colorbar)
+- overlay_url (transparent, no axes, georeferenced)
+- geojson
+- bounds (north,south,east,west)
+- map_config {center, zoom, style, overlay_mode}
+Never return only a single URL.
+# ...existing remaining instructions unchanged...
+"""
 
 # ---------- Create text agent with proper colorbar scaling and time series formatting ----------
 text_agent = proj.agents.create_agent(

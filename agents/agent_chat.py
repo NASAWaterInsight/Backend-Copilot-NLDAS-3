@@ -6,12 +6,6 @@ import json
 import logging
 import time
 from .dynamic_code_generator import execute_custom_code
-from .azure_maps_detector import AzureMapsDetector
-from .azure_maps_agent import handle_azure_maps_chat
-
-def detect_azure_maps_request(user_query: str) -> bool:
-    """Simple function to detect Azure Maps requests."""
-    return "azure maps" in user_query.lower()
 
 # Load agent info (keep existing code)
 agent_info_path = os.path.join(os.path.dirname(__file__), "../agent_info.json")
@@ -57,18 +51,6 @@ def handle_chat_request(data):
     try:
         user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
         logging.info(f"Processing chat request: {user_query}")
-
-        # NEW: Check for Azure Maps request first
-        if detect_azure_maps_request(user_query):
-            logging.info("🗺️ Detected Azure Maps request - routing to Azure Maps handler")
-            try:
-                maps_response = handle_azure_maps_chat(user_query, project_client)
-                logging.info(f"✅ Azure Maps response: {maps_response}")
-                return maps_response
-            except Exception as maps_error:
-                logging.error(f"Azure Maps handler failed: {maps_error}")
-                # Fall back to regular processing
-                logging.info("Falling back to regular agent processing")
 
         # Create a thread for the conversation
         thread = project_client.agents.threads.create()
@@ -270,7 +252,49 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                             # IMMEDIATE: Handle success/failure
                             if analysis_result.get("status") == "success":
                                 result_value = analysis_result.get("result", "No result")
-                                
+
+                                # UPDATED: Full map dict (dual URLs)
+                                if isinstance(result_value, dict) and ("overlay_url" in result_value or "static_url" in result_value):
+                                    enriched = normalize_map_result_dict(result_value, user_query)
+                                    tool_outputs.append({
+                                        "tool_call_id": tool_call.id,
+                                        "output": json.dumps({"status": "success", "completed": True})
+                                    })
+                                    return {
+                                        "status": "success",
+                                        "content": enriched.get("static_url") or enriched["overlay_url"],
+                                        "static_url": enriched.get("static_url"),
+                                        "overlay_url": enriched.get("overlay_url"),
+                                        "geojson": enriched["geojson"],
+                                        "bounds": enriched["bounds"],
+                                        "map_config": enriched["map_config"],
+                                        "type": "visualization_with_overlay",
+                                        "agent_id": text_agent_id,
+                                        "thread_id": thread.id,
+                                        "analysis_data": analysis_result
+                                    }
+
+                                # Legacy single URL path
+                                if isinstance(result_value, str) and result_value.startswith("http"):
+                                    enriched = wrap_with_geo_overlay(result_value, user_query)
+                                    tool_outputs.append({
+                                        "tool_call_id": tool_call.id,
+                                        "output": json.dumps({"status": "success", "completed": True})
+                                    })
+                                    return {
+                                        "status": "success",
+                                        "content": enriched["static_url"],
+                                        "static_url": enriched["static_url"],
+                                        "overlay_url": enriched["overlay_url"],  # may be same or None
+                                        "geojson": enriched["geojson"],
+                                        "bounds": enriched.get("bounds"),
+                                        "map_config": enriched["map_config"],
+                                        "type": "visualization_with_overlay",
+                                        "agent_id": text_agent_id,
+                                        "thread_id": thread.id,
+                                        "analysis_data": analysis_result
+                                    }
+
                                 # IMPROVED: Clean up the response format - remove icons and make it conversational
                                 if isinstance(result_value, str):
                                     # If it's already a formatted string (like "Alaska temperature: -16.4°C"), use it directly
@@ -438,3 +462,71 @@ result = f'The temperature is {temp_c:.1f}°C'""",
             "content": str(e),
             "error_type": type(e).__name__
         }
+
+def wrap_with_geo_overlay(static_url: str, original_query: str) -> dict:
+    """
+    Produce a unified response structure containing:
+    - original static map URL (static_url)
+    - overlay_url (same as static for now; future: transparent variant)
+    - minimal GeoJSON sampling placeholder (empty FeatureCollection)
+    - default map_config (frontend can refine)
+    """
+    logging.info("🌐 Adding unified overlay + geojson wrapper to static visualization")
+    geojson = {
+        "type": "FeatureCollection",
+        "features": []
+    }
+    map_config = {
+        "style": "satellite",
+        "overlay_mode": True,
+        "center": [ -98.0, 39.0 ],  # Fallback CONUS center
+        "zoom": 5
+    }
+    return {
+        "static_url": static_url,
+        "overlay_url": None,  # distinguish that we lack a transparent overlay
+        "geojson": geojson,
+        "bounds": None,
+        "map_config": map_config,
+        "original_query": original_query
+    }
+
+def normalize_map_result_dict(raw: dict, original_query: str) -> dict:
+    """Guarantee required keys for map dict returned by generated code."""
+    static_url = raw.get("static_url")
+    overlay_url = raw.get("overlay_url") or raw.get("transparent_url")
+    # fallback: if only one provided treat as both
+    if overlay_url is None and static_url:
+        overlay_url = static_url
+    if static_url is None and overlay_url:
+        static_url = overlay_url
+    geojson = raw.get("geojson") or {"type":"FeatureCollection","features":[]}
+    bounds = raw.get("bounds") or {}
+    map_config = raw.get("map_config") or {
+        "center": bounds_center(bounds),
+        "zoom": 6,
+        "style": "satellite",
+        "overlay_mode": True
+    }
+    # Fill center if missing
+    if "center" not in map_config or not map_config["center"]:
+        map_config["center"] = bounds_center(bounds)
+    if "overlay_mode" not in map_config:
+        map_config["overlay_mode"] = True
+    return {
+        "static_url": static_url,
+        "overlay_url": overlay_url,
+        "geojson": geojson,
+        "bounds": bounds,
+        "map_config": map_config,
+        "original_query": original_query
+    }
+
+def bounds_center(bounds: dict):
+    try:
+        return [
+            float((bounds.get("east")+bounds.get("west"))/2),
+            float((bounds.get("north")+bounds.get("south"))/2)
+        ]
+    except Exception:
+        return [-98.0, 39.0]

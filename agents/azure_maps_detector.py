@@ -258,3 +258,6 @@ class AzureMapsDetector:
         
         # You can expand this logic based on keywords in the original query
         return 'single_map'  # Default for now
+
+# DEPRECATED: Unified static workflow now handles all map requests; this module is no longer invoked.
+# (Retained only to avoid import errors if referenced elsewhere.)
