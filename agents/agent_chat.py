@@ -254,8 +254,9 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                 result_value = analysis_result.get("result", "No result")
 
                                 # UPDATED: Full map dict (dual URLs)
-                                if isinstance(result_value, dict) and ("overlay_url" in result_value or "static_url" in result_value):
+                                if isinstance(result_value, dict) and ("overlay_url" in result_value or "static_url"):
                                     enriched = normalize_map_result_dict(result_value, user_query)
+                                    enriched["temperature_data"] = build_temperature_data(enriched.get("geojson"))
                                     tool_outputs.append({
                                         "tool_call_id": tool_call.id,
                                         "output": json.dumps({"status": "success", "completed": True})
@@ -268,6 +269,7 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         "geojson": enriched["geojson"],
                                         "bounds": enriched["bounds"],
                                         "map_config": enriched["map_config"],
+                                        "temperature_data": enriched["temperature_data"],  # NEW
                                         "type": "visualization_with_overlay",
                                         "agent_id": text_agent_id,
                                         "thread_id": thread.id,
@@ -277,6 +279,7 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                 # Legacy single URL path
                                 if isinstance(result_value, str) and result_value.startswith("http"):
                                     enriched = wrap_with_geo_overlay(result_value, user_query)
+                                    enriched["temperature_data"] = build_temperature_data(enriched.get("geojson"))
                                     tool_outputs.append({
                                         "tool_call_id": tool_call.id,
                                         "output": json.dumps({"status": "success", "completed": True})
@@ -285,10 +288,11 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         "status": "success",
                                         "content": enriched["static_url"],
                                         "static_url": enriched["static_url"],
-                                        "overlay_url": enriched["overlay_url"],  # may be same or None
+                                        "overlay_url": enriched["overlay_url"],
                                         "geojson": enriched["geojson"],
                                         "bounds": enriched.get("bounds"),
                                         "map_config": enriched["map_config"],
+                                        "temperature_data": enriched["temperature_data"],  # NEW
                                         "type": "visualization_with_overlay",
                                         "agent_id": text_agent_id,
                                         "thread_id": thread.id,
@@ -521,6 +525,44 @@ def normalize_map_result_dict(raw: dict, original_query: str) -> dict:
         "map_config": map_config,
         "original_query": original_query
     }
+
+# NEW: Build temperature_data array from geojson features
+def build_temperature_data(geojson: dict) -> list:
+    results = []
+    if not geojson or geojson.get("type") != "FeatureCollection":
+        return results
+    for f in geojson.get("features", []):
+        try:
+            geom = f.get("geometry", {})
+            if geom.get("type") != "Point":
+                continue
+            coords = geom.get("coordinates")
+            if not coords or len(coords) < 2:
+                continue
+            lon, lat = float(coords[0]), float(coords[1])
+            props = f.get("properties", {}) or {}
+            # Prefer 'value'; fallback to common alternatives
+            val = props.get("value")
+            if val is None:
+                val = props.get("spi")
+            if val is None:
+                val = props.get("temperature")
+            if val is None:
+                continue
+            try:
+                val = float(val)
+            except:
+                continue
+            results.append({
+                "latitude": lat,
+                "longitude": lon,
+                "value": val,
+                "originalValue": val,
+                "location": f"{lat:.2f}, {lon:.2f}"
+            })
+        except Exception:
+            continue
+    return results
 
 def bounds_center(bounds: dict):
     try:

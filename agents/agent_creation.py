@@ -119,6 +119,17 @@ IMPORTANT: SPI data uses different coordinate names:
 
 🚨 CRITICAL: SPI DATA IS MONTHLY ONLY - NO DAILY ANIMATIONS POSSIBLE
 
+COLOR CONSISTENCY RULE:
+- The TRANSPARENT overlay MUST use EXACTLY the same colormap AND data range (vmin/vmax) as the static map.
+- After creating the static map, do:
+    mappable = ax.collections[0] if ax.collections else None
+    if mappable:
+        vmin, vmax = mappable.get_clim()
+    else:
+        vmin, vmax = float(np.nanmin(data.values)), float(np.nanmax(data.values))
+- Then use these vmin, vmax in the overlay pcolormesh: ax2.pcolormesh(..., vmin=vmin, vmax=vmax, cmap=<same_cmap>)
+- Never recompute or expand the range for the overlay; no buffers.
+
 FOR DROUGHT/SPI QUERIES - copy this pattern:
 ```python
 import builtins
@@ -341,6 +352,11 @@ lon_min, lon_max = -87.6, -80.0
 ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 21)
 data = ds['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).sum(dim='time')
 fig, ax = create_cartopy_map(data.lon, data.lat, data.values, 'Precipitation', 'Precipitation (mm)', 'Blues')
+mappable = ax.collections[0] if ax.collections else None
+if mappable:
+    vmin, vmax = mappable.get_clim()
+else:
+    vmin, vmax = float(np.nanmin(data.values)), float(np.nanmax(data.values))
 static_url = save_plot_to_blob_simple(fig, 'precip_static.png', account_key)
 # Transparent overlay
 fig2 = plt.figure(figsize=(10,8), frameon=False, dpi=200)
@@ -349,7 +365,7 @@ ax2 = fig2.add_axes([0,0,1,1]); ax2.set_axis_off(); ax2.set_facecolor('none')
 ax2.set_xlim(lon_min, lon_max); ax2.set_ylim(lat_min, lat_max)
 lon_grid, lat_grid = np.meshgrid(data.lon, data.lat)
 masked = np.ma.masked_invalid(data.values)
-ax2.pcolormesh(lon_grid, lat_grid, masked, cmap='Blues', shading='auto', alpha=0.9)
+ax2.pcolormesh(lon_grid, lat_grid, masked, cmap='Blues', shading='auto', alpha=0.9, vmin=vmin, vmax=vmax)
 overlay_url = save_plot_to_blob_simple(fig2, 'precip_overlay.png', account_key)
 # Build lightweight GeoJSON sample (every 4th point)
 geo_features = []
@@ -391,6 +407,11 @@ data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(l
 # STATIC FIG (with title/colorbar)
 fig, ax = create_cartopy_map(data.lon, data.lat, data.values,
                              'Temperature', 'Temperature (°C)', 'RdYlBu_r')
+mappable = ax.collections[0] if ax.collections else None
+if mappable:
+    vmin, vmax = mappable.get_clim()
+else:
+    vmin, vmax = float(np.nanmin(data.values)), float(np.nanmax(data.values))
 static_url = save_plot_to_blob_simple(fig, 'temp_static.png', account_key)
 
 # TRANSPARENT OVERLAY FIG (no axes / no colorbar) for Azure Maps
@@ -405,7 +426,7 @@ ax2.set_ylim(lat_min, lat_max)
 from matplotlib import cm
 lon_grid, lat_grid = np.meshgrid(data.lon, data.lat)
 masked = np.ma.masked_invalid(data.values)
-ax2.pcolormesh(lon_grid, lat_grid, masked, cmap='RdYlBu_r', shading='auto', alpha=0.9)
+ax2.pcolormesh(lon_grid, lat_grid, masked, cmap='RdYlBu_r', shading='auto', alpha=0.9, vmin=vmin, vmax=vmax)
 overlay_url = save_plot_to_blob_simple(fig2, 'temp_overlay.png', account_key)
 
 # GEOJSON SAMPLE
@@ -474,6 +495,12 @@ data = ds['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=built
 if hasattr(data, 'squeeze'): data = data.squeeze()
 fig, ax = create_spi_map_with_categories(data.longitude, data.latitude, data.values,
                                          'California SPI - May 2020', region_name='california')
+# SPI map helper likely fixed scale (-2.5,2.5); capture anyway
+mappable = ax.collections[0] if ax.collections else None
+if mappable:
+    vmin, vmax = mappable.get_clim()
+else:
+    vmin, vmax = -2.5, 2.5
 static_url = save_plot_to_blob_simple(fig, 'spi_static.png', account_key)
 
 # Transparent overlay (no axes)
@@ -487,7 +514,7 @@ import matplotlib.colors as mcolors
 from matplotlib.colors import LinearSegmentedColormap
 colors = ['#8B0000','#FF0000','#FF4500','#FFA500','#FFFF00','#FFFFFF80','#87CEEB','#4169E1','#0000FF']
 cmap = LinearSegmentedColormap.from_list('spi_overlay', colors, N=256)
-ax2.pcolormesh(lon_grid, lat_grid, masked, cmap=cmap, vmin=-2.5, vmax=2.5, shading='auto', alpha=0.9)
+ax2.pcolormesh(lon_grid, lat_grid, masked, cmap=cmap, vmin=vmin, vmax=vmax, shading='auto', alpha=0.9)
 overlay_url = save_plot_to_blob_simple(fig2, 'spi_overlay.png', account_key)
 
 # GEOJSON SAMPLE
