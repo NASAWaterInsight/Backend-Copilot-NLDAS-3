@@ -265,7 +265,7 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         "status": "success",
                                         "content": enriched.get("static_url") or enriched["overlay_url"],
                                         "static_url": enriched.get("static_url"),
-                                        "overlay_url": enriched.get("overlay_url"),
+                                        "overlay_url": enriched["overlay_url"],
                                         "geojson": enriched["geojson"],
                                         "bounds": enriched["bounds"],
                                         "map_config": enriched["map_config"],
@@ -527,41 +527,91 @@ def normalize_map_result_dict(raw: dict, original_query: str) -> dict:
     }
 
 # NEW: Build temperature_data array from geojson features
-def build_temperature_data(geojson: dict) -> list:
+def build_temperature_data(geojson: dict, target_max_points: int = 2500) -> list:
     results = []
     if not geojson or geojson.get("type") != "FeatureCollection":
         return results
-    for f in geojson.get("features", []):
-        try:
-            geom = f.get("geometry", {})
-            if geom.get("type") != "Point":
-                continue
-            coords = geom.get("coordinates")
-            if not coords or len(coords) < 2:
-                continue
-            lon, lat = float(coords[0]), float(coords[1])
+    features = geojson.get("features", [])
+    total = len(features)
+    if total == 0:
+        return results
+    # Adaptive stride
+    if total > target_max_points:
+        stride = max(1, int(total / target_max_points))
+    else:
+        stride = 1
+    min_val = None
+    max_val = None
+    min_feat = None
+    max_feat = None
+    for idx, f in enumerate(features):
+        if idx % stride != 0:
+            # Still track min/max
             props = f.get("properties", {}) or {}
-            # Prefer 'value'; fallback to common alternatives
-            val = props.get("value")
-            if val is None:
-                val = props.get("spi")
-            if val is None:
-                val = props.get("temperature")
-            if val is None:
-                continue
+            v = props.get("value") or props.get("spi") or props.get("temperature")
             try:
-                val = float(val)
+                fv = float(v)
+                if (min_val is None) or (fv < min_val):
+                    min_val, min_feat = fv, f
+                if (max_val is None) or (fv > max_val):
+                    max_val, max_feat = fv, f
             except:
-                continue
+                pass
+            continue
+        geom = f.get("geometry", {})
+        if geom.get("type") != "Point":
+            continue
+        coords = geom.get("coordinates")
+        if not coords or len(coords) < 2:
+            continue
+        lon, lat = float(coords[0]), float(coords[1])
+        props = f.get("properties", {}) or {}
+        val = props.get("value")
+        if val is None:
+            val = props.get("spi")
+        if val is None:
+            val = props.get("temperature")
+        if val is None:
+            continue
+        try:
+            val = float(val)
+        except:
+            continue
+        results.append({
+            "latitude": lat,
+            "longitude": lon,
+            "value": val,
+            "originalValue": val,
+            "location": f"{lat:.2f}, {lon:.2f}"
+        })
+    # Ensure extremes included
+    def add_extreme(feat):
+        if not feat:
+            return
+        geom = feat.get("geometry", {})
+        if geom.get("type") != "Point":
+            return
+        coords = geom.get("coordinates")
+        if not coords or len(coords) < 2:
+            return
+        lon, lat = float(coords[0]), float(coords[1])
+        props = feat.get("properties", {}) or {}
+        v = props.get("value") or props.get("spi") or props.get("temperature")
+        try:
+            fv = float(v)
+        except:
+            return
+        key = (round(lat, 6), round(lon, 6))
+        if all((round(r["latitude"],6), round(r["longitude"],6)) != key for r in results):
             results.append({
                 "latitude": lat,
                 "longitude": lon,
-                "value": val,
-                "originalValue": val,
+                "value": fv,
+                "originalValue": fv,
                 "location": f"{lat:.2f}, {lon:.2f}"
             })
-        except Exception:
-            continue
+    add_extreme(min_feat)
+    add_extreme(max_feat)
     return results
 
 def bounds_center(bounds: dict):
