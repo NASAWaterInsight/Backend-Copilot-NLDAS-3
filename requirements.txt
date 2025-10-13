@@ -1,6 +1,8 @@
 azure-identity
 azure-keyvault-secrets
 azure-ai-projects
+azure-maps-route
+azure-maps-search
 fsspec
 xarray
 zarr
@@ -14,3 +16,5 @@ cartopy
 shapely
 pyproj
 requests
+mem0ai
+azure-search-documents
