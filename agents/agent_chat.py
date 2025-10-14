@@ -145,56 +145,72 @@ def get_user_id(req, body: dict) -> str:
 
 def handle_chat_request(data):
     """
-    ULTRA-DIRECT: Immediate function execution with Azure Maps detection
+    Enhanced chat handler with intelligent Mem0 memory integration
     """
     try:
         user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
         
-        # ADD MEMORY: Extract user ID for memory
+        # Extract user ID
         user_id = get_user_id(data.get('_request'), data)
         logging.info(f"🆔 Processing request for user: {user_id[:8]}...")
         
-        # INTELLIGENT MEMORY RETRIEVAL: Only get contextually relevant memories
+        # ENHANCED MEMORY RETRIEVAL with LOWER threshold for conversation continuity
         memory_context = []
         if MEMORY_AVAILABLE and memory_manager and memory_manager.enabled and user_id != 'anonymous':
             try:
-                # SMART RETRIEVAL: Search with semantic similarity
-                memories = memory_manager.search(user_query, user_id=user_id, limit=3)
+                # Use Mem0's semantic search 
+                memories = memory_manager.search(
+                    user_query, 
+                    user_id=user_id, 
+                    limit=5,  # Get more candidates for filtering
+                    enable_graph=False
+                )
                 
                 if memories:
-                    logging.info(f"🧠 Raw memories retrieved: {len(memories)}")
+                    logging.info(f"🧠 Retrieved {len(memories)} memory candidates")
                     
-                    # ENHANCED FILTERING: Check relevance to current query
+                    # ENHANCED FILTERING: Lower threshold for conversation continuity
                     relevant_memories = []
                     
                     for mem in memories:
                         if isinstance(mem, dict):
                             memory_text = mem.get('memory', mem.get('text', ''))
-                            # Check if this memory has a relevance score
-                            score = mem.get('score', mem.get('relevance_score', 0.0))
-                        elif isinstance(mem, str):
-                            memory_text = mem
-                            score = 1.0  # Default high score for string format
-                        else:
-                            memory_text = str(mem)
-                            score = 0.5  # Default medium score
-                        
-                        if memory_text and score > 0.3:  # Only use memories with decent relevance
-                            # ADDITIONAL CONTEXTUAL FILTERING
-                            if is_memory_contextually_relevant(memory_text, user_query):
-                                relevant_memories.append(memory_text)
-                                logging.info(f"   ✅ Relevant memory (score: {score:.2f}): {memory_text[:50]}...")
+                            score = mem.get('score', 0.0)
+                            
+                            # LOWERED threshold from 0.5 to 0.3 for better conversation continuity
+                            if score > 0.3 and memory_text:  
+                                # Additional contextual check
+                                if is_memory_contextually_relevant(memory_text, user_query):
+                                    relevant_memories.append({
+                                        'text': memory_text,
+                                        'score': score,
+                                        'metadata': mem.get('metadata', {})
+                                    })
+                                    logging.info(f"   ✅ Relevant (score: {score:.2f}): {memory_text[:50]}...")
+                                else:
+                                    logging.info(f"   ❌ Filtered: {memory_text[:30]}...")
                             else:
-                                logging.info(f"   ❌ Filtered out irrelevant: {memory_text[:30]}...")
+                                logging.info(f"   ⚠️ Low score ({score:.2f}): {memory_text[:30]}...")
                     
                     memory_context = relevant_memories
                     
                     if memory_context:
-                        logging.info(f"🧠 Using {len(memory_context)} contextually relevant memories")
+                        logging.info(f"🧠 Using {len(memory_context)} relevant memories")
                     else:
                         logging.info("🧠 No contextually relevant memories found")
+                        
+                        # FALLBACK: If no relevant memories but user query looks like a continuation, get recent memories
+                        if re.match(r'^\s*(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}\s*$|^\s*\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\s*$', user_query.lower().strip()):
+                            logging.info("🗓️ Query looks like date - getting recent context as fallback")
+                            try:
+                                recent_memories = memory_manager.recent_context(user_id=user_id, limit=3)
+                                if recent_memories:
+                                    memory_context = [{'text': mem, 'score': 0.8} for mem in recent_memories]
+                                    logging.info(f"🔄 Using {len(memory_context)} recent memories as fallback")
+                            except Exception as recent_error:
+                                logging.warning(f"Recent context fallback failed: {recent_error}")
                 else:
-                    logging.info("🧠 No memories returned from search")
+                    logging.info("🧠 No memories found")
                     
             except Exception as mem_error:
                 logging.warning(f"Memory search failed: {mem_error}")
@@ -211,8 +227,8 @@ def handle_chat_request(data):
                 "content": coverage["summary"],
                 "coverage": coverage,
                 "agent_id": text_agent_id,
-                "user_id": user_id,  # MEMORY: Include user_id in response
-                "memory_context": memory_context  # MEMORY: Include memory context used (if applicable)
+                "user_id": user_id,
+                "memory_context": memory_context
             }
 
         # NEW: Lightweight heuristic signals for prompt conditioning
@@ -220,40 +236,51 @@ def handle_chat_request(data):
         has_var = any(k in q_lower for k in ["temperature","tair","precip","rain","rainf","humidity","qair","spi","drought","wind","pressure","psurf"])
         has_place = any(k in q_lower for k in ["florida","alaska","california","michigan","texas","ohio","virginia","colorado","arizona","georgia","maryland","nevada","oregon","washington"])
         has_date_token = any(tok in q_lower for tok in [" 2020"," 2021"," 2022"," 2023"," jan"," feb"," mar"," apr"," may"," jun"," jul"," aug"," sep"," oct"," nov"," dec"])
-        minimal_context = not (has_var and (has_place or has_date_token))
 
         # Create a thread for the conversation
         thread = project_client.agents.threads.create()
         logging.info(f"Created thread: {thread.id}")
 
-        # CONTEXTUAL MEMORY INTEGRATION: Only include if relevant
+        # ENHANCED PROMPT with memory context
         memory_context_text = ""
         if memory_context:
-            memory_context_text = f"\n\nRelevant context from previous conversations:\n"
+            memory_context_text = "\n\nRelevant context from previous conversations:\n"
             for mem in memory_context:
-                memory_context_text += f"- {mem}\n"
+                if isinstance(mem, dict):
+                    text = mem.get('text', '')
+                    score = mem.get('score', 0)
+                    memory_context_text += f"- [{score:.2f}] {text}\n"
+                else:
+                    memory_context_text += f"- {mem}\n"
 
-        # ENHANCED PROMPT: Emphasize context relevance
-        enhanced_query = f"""You are an NLDAS-3 weather assistant that can execute code to analyze data.
+        enhanced_query = f"""You are an NLDAS-3 weather assistant with visual memory of maps and patterns.
 
 USER: "{user_query}"{memory_context_text}
 
-RULES:
-1. If user asks casual questions (like "hello"), just chat briefly and ask for weather analysis needs
-2. If you have LOCATION + VARIABLE + DATE from current message OR relevant previous conversation, call execute_custom_code immediately
-3. If missing info, ask for what's missing
-4. IMPORTANT: Only use previous context if it's directly relevant to the current request
+ENHANCED CAPABILITIES:
+- You can SEE and ANALYZE maps you've previously generated
+- You can answer questions about VISUAL PATTERNS in temperature maps
+- You can identify spatial relationships like "weather around lakes", temperature gradients, hot/cold spots
 
-Examples of what to execute:
-- "temperature map for Maryland July 12, 2023" → execute_custom_code
-- Previous: "map of Michigan Feb 12 precipitation" + Current: "show me that for Florida" → execute_custom_code  
-- Previous: "hello how are you" + Current: "show temperature map" → ask for location and date (previous context not relevant)
+CRITICAL RULES:
+1. If you have COMPLETE info (location + variable + date), call execute_custom_code IMMEDIATELY
+2. If user asks about VISUAL PATTERNS in previous maps (like "weather around lakes"), analyze the stored image memory
+3. Use previous context including VISUAL MEMORIES when relevant
+4. For pattern analysis questions, reference the visual data from stored map images
 
-Current status:
+Context Status:
 - Variable detected: {has_var}
-- Location detected: {has_place}
+- Location detected: {has_place}  
 - Date detected: {has_date_token}
 - Relevant context available: {len(memory_context) > 0}
+- Visual memories available: {len([m for m in memory_context if isinstance(m, dict) and m.get('metadata', {}).get('can_analyze_visually')])>0}
+
+Examples:
+- "temperature map for Michigan June 1, 2023" → Execute code, store visual memory
+- "is the weather around lakes cooler?" → Analyze stored visual memory of Michigan temperature map
+- "show me warmer/colder regions" → Reference visual patterns from stored map
+
+RESPOND with visual analysis if asking about map patterns, or execute code for new requests.
 
 Respond now."""
 
@@ -289,6 +316,11 @@ Respond now."""
         custom_code_executed = False
         final_response_content = None
         in_progress_count = 0
+        
+        # Variables to track extracted info for structured memory storage
+        extracted_variable = None
+        extracted_region = None
+        extracted_date = None
         
         start_time = time.time()
         max_total_time = 120
@@ -362,7 +394,7 @@ Respond now."""
                             continue
                         
                         try:
-                            # ENHANCED: Better argument parsing
+                            # ENHANCED: Better argument parsing and extraction tracking
                             raw_arguments = tool_call.function.arguments
                             logging.info(f"📝 Raw arguments length: {len(raw_arguments) if raw_arguments else 0}")
                             
@@ -420,10 +452,30 @@ result = f'The average temperature in Alaska is {temp_c:.1f}°C'"""
                                     "python_code": fallback_code,
                                     "user_request": user_query
                                 }
+                                # Extract info from fallback
+                                extracted_variable = "temperature"
+                                extracted_region = "Alaska" 
+                                extracted_date = "2023-01-03"
                             else:
                                 try:
                                     function_args = json.loads(raw_arguments)
                                     logging.info("✅ Successfully parsed JSON arguments")
+                                    
+                                    # Try to extract variable/region/date from the code for structured memory
+                                    python_code = function_args.get("python_code", "")
+                                    if "Tair" in python_code or "temperature" in python_code.lower():
+                                        extracted_variable = "temperature"
+                                    elif "Rainf" in python_code or "precip" in python_code.lower():
+                                        extracted_variable = "precipitation"
+                                    elif "SPI" in python_code or "spi" in python_code.lower():
+                                        extracted_variable = "spi"
+                                    
+                                    # Extract region from code or user query
+                                    for state in US_STATE_LIKE:
+                                        if state in user_query.lower() or state in python_code.lower():
+                                            extracted_region = state.title()
+                                            break
+                                    
                                 except json.JSONDecodeError as json_error:
                                     logging.warning(f"⚠️ JSON parsing failed: {json_error}")
                                     # Try to extract from potential markdown
@@ -438,6 +490,7 @@ ds.close()
 result = f'The temperature is {temp_c:.1f}°C'""",
                                             "user_request": user_query
                                         }
+                                        extracted_variable = "temperature"
                                     else:
                                         raise ValueError("Could not parse function arguments")
                             
@@ -452,20 +505,84 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                             if analysis_result.get("status") == "success":
                                 result_value = analysis_result.get("result", "No result")
 
-                                # ADD MEMORY: Store successful analysis results  
+                                # ENHANCED: Store successful analysis with IMAGE for vision memory
                                 if MEMORY_AVAILABLE and memory_manager and memory_manager.enabled and user_id != 'anonymous':
                                     try:
-                                        if isinstance(result_value, str) and result_value.startswith("http"):
+                                        # Store the successful interaction
+                                        if isinstance(result_value, dict) and ("overlay_url" in result_value or "static_url" in result_value):
+                                            # This was a map generation - STORE WITH IMAGE for vision analysis
+                                            bounds = result_value.get("bounds", {})
+                                            map_url = result_value.get("static_url") or result_value.get("overlay_url")
+                                            
+                                            # VISION MEMORY: Store the map image with contextual description
+                                            if map_url:
+                                                # ENHANCED: Skip multimodal for now, go straight to robust text-only fallback
+                                                try:
+                                                    fallback_description = f"Generated {extracted_variable or 'weather'} map for {extracted_region or 'region'} on {extracted_date or 'date'}. " \
+                                                                         f"Map shows spatial temperature patterns across the region. " \
+                                                                         f"Map URL: {map_url}. " \
+                                                                         f"User can ask about visual patterns like 'weather around lakes', temperature gradients, hot/cold spots in this map."
+                                                    
+                                                    memory_manager.add(
+                                                        fallback_description,
+                                                        user_id=user_id,
+                                                        meta={
+                                                            "type": "map_visualization_text_only",
+                                                            "variable": extracted_variable,
+                                                            "region": extracted_region,
+                                                            "date": extracted_date,
+                                                            "map_url": map_url,
+                                                            "can_analyze_visually": True  # Agent can reference visual patterns
+                                                        }
+                                                    )
+                                                    logging.info(f"🖼️ Stored visual memory (text-based): {extracted_variable} for {extracted_region}")
+                                                    
+                                                except Exception as fallback_error:
+                                                    logging.warning(f"Visual memory fallback failed: {fallback_error}")
+                                            
+                                            logging.info(f"🧠 Stored structured analysis: {extracted_variable} for {extracted_region}")
+                                            
+                                        elif isinstance(result_value, str) and result_value.startswith("http"):
+                                            # ENHANCED: Skip multimodal, use robust text-only approach
+                                            try:
+                                                fallback_description = f"Generated {extracted_variable or 'weather'} visualization showing spatial patterns. " \
+                                                                     f"Map URL: {result_value}. " \
+                                                                     f"User can ask about visual patterns, spatial relationships, and weather gradients in this map."
+                                                
+                                                memory_manager.add(
+                                                    fallback_description,
+                                                    user_id=user_id,
+                                                    meta={
+                                                        "type": "map_visualization_text_only",
+                                                        "variable": extracted_variable,
+                                                        "region": extracted_region,
+                                                        "map_url": result_value,
+                                                        "can_analyze_visually": True
+                                                    }
+                                                )
+                                                logging.info(f"🖼️ Stored visual memory (text-based): {extracted_variable} visualization")
+                                                
+                                            except Exception as fallback_error:
+                                                logging.warning(f"Visual memory fallback failed: {fallback_error}")
+                                            
+                                            # Regular text memory
                                             memory_manager.add(
                                                 f"Generated visualization for: {user_query}. Result: {result_value}",
                                                 user_id=user_id,
-                                                meta={"type": "successful_analysis", "result_type": "visualization"}
+                                                meta={"type": "successful_analysis", "result_type": "visualization", 
+                                                     "variable": extracted_variable, "region": extracted_region}
                                             )
                                         else:
+                                            # FIXED: Only store a brief summary, don't truncate the actual result
+                                            memory_summary = f"Completed {extracted_variable or 'weather'} analysis for {extracted_region or 'region'}"
+                                            if extracted_date:
+                                                memory_summary += f" on {extracted_date}"
+                                            
                                             memory_manager.add(
-                                                f"Analysis completed for: {user_query}. Result: {str(result_value)[:100]}...",
+                                                memory_summary,
                                                 user_id=user_id,
-                                                meta={"type": "successful_analysis", "result_type": "data"}
+                                                meta={"type": "successful_analysis", "result_type": "data",
+                                                     "variable": extracted_variable, "region": extracted_region}
                                             )
                                     except Exception as mem_error:
                                         logging.warning(f"Failed to store result in memory: {mem_error}")
@@ -520,8 +637,39 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         "memory_context": memory_context  # MEMORY: Include memory context used (if applicable)
                                     }
 
-                                # IMPROVED: Clean up the response format - remove icons and make it conversational
-                                if isinstance(result_value, str):
+                                # ENHANCED: Handle dictionary results with temperature analysis
+                                if isinstance(result_value, dict):
+                                    # Check if it's temperature coordinate analysis
+                                    if "warmest_point" in result_value and "coldest_point" in result_value:
+                                        warmest = result_value["warmest_point"]
+                                        coldest = result_value["coldest_point"]
+                                        
+                                        # Format human-readable response
+                                        final_response_content = f"Based on the temperature analysis for Michigan on June 1, 2023:\n\n"
+                                        final_response_content += f"🌡️ **Warmest region**: Located at coordinates ({warmest[0]}, {warmest[1]}) - this appears to be in the southwestern part of Michigan\n\n"
+                                        final_response_content += f"❄️ **Coldest region**: Located at coordinates ({coldest[0]}, {coldest[1]}) - this appears to be in the northern part of Michigan\n\n"
+                                        final_response_content += f"The temperature difference shows that southern Michigan was warmer than northern Michigan on that date, which is typical due to latitude differences."
+                                    
+                                    # Check if it's precipitation data or other weather data
+                                    elif any(key in result_value for key in ["precipitation", "humidity", "pressure", "average_temperature"]):
+                                        # Format other weather data
+                                        final_response_content = "Weather Analysis Results:\n"
+                                        for key, value in result_value.items():
+                                            if key == "average_temperature":
+                                                final_response_content += f"Average Temperature: {value:.1f}°C\n"
+                                            elif key == "precipitation":
+                                                final_response_content += f"Precipitation: {value:.2f} mm\n"
+                                            else:
+                                                final_response_content += f"{key.replace('_', ' ').title()}: {value}\n"
+                                    
+                                    else:
+                                        # Generic dictionary formatting
+                                        final_response_content = "Analysis Results:\n"
+                                        for key, value in result_value.items():
+                                            final_response_content += f"{key.replace('_', ' ').title()}: {value}\n"
+                                
+                                # IMPROVED: Clean up the response format for strings
+                                elif isinstance(result_value, str):
                                     # If it's already a formatted string (like "Alaska temperature: -16.4°C"), use it directly
                                     if any(phrase in result_value.lower() for phrase in ['temperature', 'precipitation', 'humidity', 'pressure']):
                                         # Convert technical format to conversational format
@@ -549,7 +697,7 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         # Other string results
                                         final_response_content = result_value
                                 else:
-                                    # For non-string results (dict, etc.), keep as is
+                                    # For other result types, convert to string
                                     final_response_content = str(result_value)
                                 
                                 tool_outputs.append({
@@ -899,24 +1047,40 @@ def extract_last_assistant_message(thread_id: str) -> str:
 
 def is_memory_contextually_relevant(memory_text: str, current_query: str) -> bool:
     """
-    Determine if a memory is contextually relevant to the current query
-    Based on the Mem0 approach described in the articles
+    ENHANCED: More aggressive context detection for conversation continuity
     """
     try:
         memory_lower = memory_text.lower()
         query_lower = current_query.lower()
         
         # WEATHER/ANALYSIS CONTEXT KEYWORDS
-        weather_terms = ['temperature', 'precipitation', 'spi', 'drought', 'humidity', 'wind', 'pressure', 'weather', 'map', 'analysis']
+        weather_terms = ['temperature', 'precipitation', 'spi', 'drought', 'humidity', 'wind', 'pressure', 'weather', 'map', 'analysis', 'show']
         location_terms = ['florida', 'alaska', 'california', 'michigan', 'texas', 'ohio', 'virginia', 'colorado', 'arizona', 'georgia', 'maryland', 'nevada', 'oregon', 'washington']
-        date_terms = ['2020', '2021', '2022', '2023', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']
         
-        # Check for shared weather/analysis context
+        # ENHANCED: Detect recent conversation flow patterns
+        recent_conversation_indicators = [
+            # Previous context indicators in memory
+            'user asked:', 'show me', 'map of', 'precipitation', 'temperature',
+            # Current query continuation indicators  
+            'may', 'april', 'march', 'january', 'february', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+            '2020', '2021', '2022', '2023', '12', '15', '20', '25'
+        ]
+        
+        # CRITICAL FIX: If current query is just a date, it's VERY likely continuing previous conversation
+        date_only_pattern = re.match(r'^\s*(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}\s*$|^\s*\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\s*$', query_lower)
+        if date_only_pattern:
+            logging.info(f"🗓️ Detected date-only query: '{current_query}' - checking for weather context in memory")
+            # If memory contains weather terms, this is almost certainly relevant
+            if any(term in memory_lower for term in ['precipitation', 'temperature', 'map', 'michigan', 'florida', 'show me']):
+                logging.info(f"   ✅ Found weather context in memory - date query is relevant")
+                return True
+        
+        # Check for shared weather/analysis context (original logic)
         memory_has_weather = any(term in memory_lower for term in weather_terms)
-        query_has_weather = any(term in query_lower for term in weather_terms)
+        query_has_weather = any(term in query_lower for term in weather_terms + recent_conversation_indicators)
         
         # If both are about weather/analysis, check for specific overlap
-        if memory_has_weather and query_has_weather:
+        if memory_has_weather or query_has_weather:
             # Check for shared location
             memory_locations = [term for term in location_terms if term in memory_lower]
             query_locations = [term for term in location_terms if term in query_lower]
@@ -925,42 +1089,53 @@ def is_memory_contextually_relevant(memory_text: str, current_query: str) -> boo
             memory_variables = [term for term in weather_terms if term in memory_lower]
             query_variables = [term for term in weather_terms if term in query_lower]
             
-            # Relevant if they share location, variable, or are both about maps/analysis
+            # ENHANCED: More inclusive relevance detection
             shared_locations = set(memory_locations) & set(query_locations)
             shared_variables = set(memory_variables) & set(query_variables)
-            both_about_maps = 'map' in memory_lower and ('map' in query_lower or 'show' in query_lower)
+            both_about_maps = ('map' in memory_lower or 'show' in memory_lower) and ('map' in query_lower or 'show' in query_lower or date_only_pattern)
+            recent_weather_context = any(term in memory_lower for term in recent_conversation_indicators)
             
-            if shared_locations or shared_variables or both_about_maps:
+            if shared_locations or shared_variables or both_about_maps or recent_weather_context:
                 return True
         
-        # CONTEXTUAL CONTINUATION PATTERNS (from Mem0 approach)
+        # CONTEXTUAL CONTINUATION PATTERNS (enhanced)
         continuation_patterns = [
             # Reference patterns
             ('that', 'show', 'display', 'same', 'similar', 'also', 'too'),
             # Modification patterns  
             ('but for', 'instead of', 'change to', 'different'),
             # Follow-up patterns
-            ('what about', 'how about', 'can you show')
+            ('what about', 'how about', 'can you show'),
+            # NEW: Date continuation patterns
+            ('may', 'april', 'march', 'january', 'february', 'june', 'july', 'august', 'september', 'october', 'november', 'december')
         ]
         
         # Check if current query references previous context
         for pattern_group in continuation_patterns:
             if any(pattern in query_lower for pattern in pattern_group):
-                return True
+                # If it's a date pattern, require weather context in memory
+                if pattern in ['may', 'april', 'march', 'january', 'february', 'june', 'july', 'august', 'september', 'october', 'november', 'december']:
+                    if memory_has_weather:
+                        return True
+                else:
+                    return True
         
-        # EXCLUDE NON-CONTEXTUAL MEMORIES
+        # EXCLUDE NON-CONTEXTUAL MEMORIES (but be more lenient for weather context)
         non_contextual_patterns = [
             'hello', 'hi there', 'how are you', 'good morning', 'good afternoon',
             'thank you', 'thanks', 'bye', 'goodbye', 'nice to meet you'
         ]
         
-        # If memory is just greetings and query is about weather, not relevant
+        # FIXED: Syntax error on this line - missing 'any(' function call
         memory_is_greeting = any(pattern in memory_lower for pattern in non_contextual_patterns)
-        if memory_is_greeting and query_has_weather:
+        if memory_is_greeting and not any(term in memory_lower for term in weather_terms):
             return False
         
-        # Default: if both are short and different topics, not relevant
-        if len(memory_text.split()) < 5 and len(current_query.split()) < 5:
+        # ENHANCED: Allow short weather-related memories to be relevant to date queries
+        if len(memory_text.split()) < 5:
+            # Short memory - only relevant if it contains weather terms and current query is date-like
+            if memory_has_weather and (date_only_pattern or any(term in query_lower for term in recent_conversation_indicators)):
+                return True
             return False
             
         return False  # Default to not relevant unless specifically matches

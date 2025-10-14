@@ -297,3 +297,61 @@ def debug_info(req: func.HttpRequest) -> func.HttpResponse:
         status_code=200,
         mimetype="application/json"
     )
+
+@app.route(route="clear_memory", auth_level=func.AuthLevel.ANONYMOUS)
+def clear_memory(req: func.HttpRequest) -> func.HttpResponse:
+    """Clear memory for a specific user (GDPR compliance)"""
+    try:
+        user_id = req.headers.get('X-User-Id') or req.headers.get('X-User-Email')
+        
+        if not user_id or user_id == 'anonymous':
+            return func.HttpResponse(
+                safe_json_dumps({"error": "No user ID provided"}),
+                status_code=400,
+                mimetype="application/json"
+            )
+        
+        # Clear user memory if available
+        if AGENTS_IMPORTED and MEMORY_AVAILABLE:
+            try:
+                from agents.memory_manager import memory_manager
+                success = memory_manager.delete_all_user_memories(user_id)
+                
+                return func.HttpResponse(
+                    safe_json_dumps({
+                        "status": "success",
+                        "message": f"Memory cleared for user",
+                        "user_id": user_id[:8] + "...",
+                        "cleared": success
+                    }),
+                    status_code=200,
+                    mimetype="application/json"
+                )
+            except Exception as e:
+                return func.HttpResponse(
+                    safe_json_dumps({
+                        "status": "error",
+                        "message": f"Failed to clear memory: {str(e)}"
+                    }),
+                    status_code=500,
+                    mimetype="application/json"
+                )
+        else:
+            return func.HttpResponse(
+                safe_json_dumps({
+                    "status": "info",
+                    "message": "Memory system not available"
+                }),
+                status_code=200,
+                mimetype="application/json"
+            )
+            
+    except Exception as e:
+        return func.HttpResponse(
+            safe_json_dumps({
+                "status": "error",
+                "message": f"Clear memory failed: {str(e)}"
+            }),
+            status_code=500,
+            mimetype="application/json"
+        )
