@@ -133,34 +133,86 @@ COLOR CONSISTENCY RULE:
 FOR DROUGHT/SPI QUERIES - copy this pattern:
 ```python
 import builtins
-# Drought/SPI queries use MONTHLY data with different coordinates
-lat_min, lat_max = 38.8, 39.8  # Maryland
-lon_min, lon_max = -79.5, -75.0
-# DO NOT OVERRIDE ACCOUNT_NAME OR account_key - they are already set!
-ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2012, 3)  # March 2012
-# SPI data uses 'latitude' and 'longitude' instead of 'lat' and 'lon'
+# Extract location from user request dynamically
+user_query_lower = user_request.lower()
+
+# Dynamic coordinate detection based on user query
+if 'maryland' in user_query_lower:
+    lat_min, lat_max = 38.8, 39.8
+    lon_min, lon_max = -79.5, -75.0
+    region_name = 'Maryland'
+elif 'florida' in user_query_lower:
+    lat_min, lat_max = 24.5, 31.0
+    lon_min, lon_max = -87.6, -80.0
+    region_name = 'Florida'
+elif 'california' in user_query_lower:
+    lat_min, lat_max = 32.5, 42.0
+    lon_min, lon_max = -124.4, -114.1
+    region_name = 'California'
+elif 'texas' in user_query_lower:
+    lat_min, lat_max = 25.8, 36.5
+    lon_min, lon_max = -106.6, -93.5
+    region_name = 'Texas'
+elif 'mexico' in user_query_lower:
+    lat_min, lat_max = 14.5, 32.7
+    lon_min, lon_max = -118.4, -86.7
+    region_name = 'Mexico'
+else:
+    # Default to Maryland if no region detected
+    lat_min, lat_max = 38.8, 39.8
+    lon_min, lon_max = -79.5, -75.0
+    region_name = 'Maryland'
+
+# Extract year and month from user request
+import re
+year_match = re.search(r'(20\d{2})', user_request)
+year = int(year_match.group(1)) if year_match else 2020
+
+month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_request.lower())
+month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
+month = month_names.index(month_match.group(1)) + 1 if month_match else 5
+
+# Load SPI data
+ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
 data = ds['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
-# CRITICAL: Squeeze out extra dimensions for plotting
 if hasattr(data, 'squeeze'):
     data = data.squeeze()
 
-# Enhanced title format for clarity
-title = "Standardized Precipitation Index (SPI) — March 2012, Maryland"
+# FIXED: For TEXT queries (what is, average, how much, tell me) - NOT show me
+if any(phrase in user_request.lower() for phrase in ['what is', 'average', 'how much', 'tell me']):
+    spi_value = float(data.mean())
+    ds.close()
+    
+    if spi_value <= -2.0:
+        condition = "extreme drought"
+    elif spi_value <= -1.5:
+        condition = "severe drought"
+    elif spi_value <= -1.0:
+        condition = "moderate drought"
+    elif spi_value <= -0.5:
+        condition = "mild drought"
+    elif spi_value <= 0.5:
+        condition = "near normal"
+    elif spi_value <= 1.0:
+        condition = "mild wet"
+    elif spi_value <= 1.5:
+        condition = "moderate wet"
+    elif spi_value <= 2.0:
+        condition = "severe wet"
+    else:
+        condition = "extreme wet"
+    
+    result = f"The SPI in {region_name} for {month_names[month-1].title()} {year} is {spi_value:.2f} ({condition})"
 
-# Use standardized SPI visualization with drought categories
-fig, ax = create_spi_map_with_categories(data.longitude, data.latitude, data.values, title, region_name='maryland')
-
-url = save_plot_to_blob_simple(fig, 'maryland_drought_mar2012_categorized.png', account_key)
-plt.close(fig)
-ds.close()
-result = url
+# FIXED: For MAP queries (show me, display, visualize) - return map
+else:
+    title = f"Standardized Precipitation Index (SPI) — {month_names[month-1].title()} {year}, {region_name}"
+    fig, ax = create_spi_map_with_categories(data.longitude, data.latitude, data.values, title, region_name=region_name.lower())
+    url = save_plot_to_blob_simple(fig, f'{region_name.lower()}_spi_{year}_{month:02d}.png', account_key)
+    plt.close(fig)
+    ds.close()
+    result = url
 ```
-
-🚨 IMPORTANT: SPI DAILY ANIMATIONS ARE NOT POSSIBLE - BUT MULTI-YEAR MONTHLY ANIMATIONS ARE!
-If user asks for SPI animation, suggest:
-1. Multi-year SPI animation for same month (e.g., "May SPI 2010-2020")
-2. SPI subplot comparison between months
-3. Use precipitation (Rainf) animation for daily drought-related analysis
 
 FOR SPI MULTI-YEAR ANIMATION (show drought trends over time):
 ```python
