@@ -8,6 +8,79 @@ import time
 import re
 from .dynamic_code_generator import execute_custom_code
 from .dataset_metadata import build_coverage_response
+from .memory_manager import memory_manager  # NEW
+
+# EXPANDED follow-up detector keywords
+FOLLOWUP_KEYWORDS = ["this map","that map","previous map","last map","earlier map","above map","shown map",
+                     "the map","coastal area","shoreline","edge","pattern","why is","what causes",
+                     "explain this","analyze this","temperature pattern","cooler","warmer","higher","lower"]
+
+def _is_follow_up_query(q: str) -> bool:  # UPDATED
+    ql = (q or "").lower()
+    # Direct map references
+    if any(k in ql for k in ["this map","that map","previous map","last map","earlier map","above map","shown map"]):
+        return True
+    # Pattern/analysis questions that likely refer to current context
+    pattern_words = ["coastal area","shoreline","edge","pattern","cooler","warmer","higher","lower"]
+    question_words = ["why","what causes","explain","analyze","how come"]
+    if any(p in ql for p in pattern_words) and any(q in ql for q in question_words):
+        return True
+    # Temperature-specific follow-ups
+    if any(phrase in ql for phrase in ["why is the temperature","what causes the temperature","temperature pattern"]):
+        return True
+    return False
+
+def _follow_up_response(user_query: str, user_id: str):  # UPDATED
+    ctx = LAST_MAP_CONTEXT.get(user_id)
+    if not ctx:
+        return {
+            "status": "no_prior_context",
+            "content": "No prior map context available. Please request a map first.",
+            "memory_context": []
+        }
+    
+    variable = ctx.get("variable") or "unknown"
+    region = ctx.get("region") or "previous region"
+    date_scope = ctx.get("date") or "previous date"
+    
+    # ENHANCED: Provide actual analysis based on query content
+    ql = user_query.lower()
+    
+    if variable == "Tair" or variable == "temperature":
+        if any(word in ql for word in ["coastal","shoreline","edge","cooler","warmer"]):
+            if "cooler" in ql or "cool" in ql:
+                content = f"Coastal areas in {region} ({date_scope}) typically appear cooler in temperature maps due to several factors: (1) Large water bodies like lakes and oceans have high thermal inertia, heating and cooling more slowly than land. (2) During daytime, land heats faster than water, creating a temperature contrast. (3) Lake/sea breezes can moderate coastal temperatures. (4) Evaporation from water surfaces provides cooling. The specific pattern depends on the time of day, season, and local geography."
+            elif "warmer" in ql or "warm" in ql:
+                content = f"If coastal areas in {region} ({date_scope}) appear warmer, this could be due to: (1) Nighttime conditions when water retains heat longer than land. (2) Seasonal effects where large water bodies store heat from warmer months. (3) Urban heat island effects in coastal cities. (4) Measurement timing - water temperature vs air temperature differences. The pattern would need detailed analysis of the specific data and timing."
+            else:
+                content = f"Temperature patterns along coastlines in {region} ({date_scope}) are influenced by land-water thermal contrasts, with water bodies moderating temperatures due to their high heat capacity. The specific pattern depends on time of day, season, and local meteorology."
+        elif "pattern" in ql:
+            content = f"The temperature pattern in {region} ({date_scope}) reflects spatial gradients driven by: (1) Latitude effects (north-south temperature differences), (2) Elevation changes (higher elevation = cooler), (3) Land cover types (urban, forest, agriculture), (4) Water body influences, and (5) Local weather systems. For specific analysis, the actual temperature values and gradients would need to be examined."
+        else:
+            content = f"This refers to the temperature map for {region} in {date_scope}. The spatial patterns visible reflect the influence of geography, elevation, land cover, and meteorological conditions on air temperature distribution."
+    
+    elif variable == "SPI3" or variable == "spi":
+        content = f"This SPI (drought) map for {region} ({date_scope}) shows precipitation patterns over a 3-month period. Spatial variations reflect: (1) Regional precipitation patterns, (2) Topographic effects on rainfall, (3) Storm track influences, and (4) Seasonal weather patterns. Values below -1.0 indicate drier than normal conditions, while values above +1.0 indicate wetter than normal."
+    
+    elif variable == "Rainf" or "precip" in ql:
+        content = f"This precipitation map for {region} ({date_scope}) shows rainfall distribution. Spatial patterns are influenced by: (1) Storm systems and frontal passages, (2) Topographic effects (orographic precipitation), (3) Proximity to water bodies, and (4) Local convective processes. Coastal areas may show different patterns due to sea/land breeze effects."
+    
+    else:
+        content = f"This {variable} map for {region} ({date_scope}) shows spatial patterns that reflect the influence of meteorological, geographical, and seasonal factors on this variable's distribution."
+    
+    return {
+        "status": "follow_up_analysis",
+        "content": content,
+        "context": {
+            "variable": variable,
+            "region": region,
+            "date": date_scope,
+            "static_url": ctx.get("static_url"),
+            "overlay_url": ctx.get("overlay_url"),
+            "bounds": ctx.get("bounds")
+        },
+        "memory_context": []
+    }
 
 # Load agent info (keep existing code)
 agent_info_path = os.path.join(os.path.dirname(__file__), "../agent_info.json")
@@ -103,13 +176,67 @@ def is_coverage_query(q: str) -> bool:
         return True
     return False
 
+# NEW: per-user last map context (ephemeral)
+LAST_MAP_CONTEXT = {}  # user_id -> dict with variable, region, date_scope, bounds, static_url, overlay_url
+
+ISO_DATE_PATTERN = re.compile(r"\b20\d{2}-(0[1-9]|1[0-2])(-([0-2]\d|3[01]))?\b")  # NEW
+
+def _infer_date_scope_from_query(q: str):
+    ql = (q or "").lower()
+    import re
+    year = re.search(r"\b(20\d{2})\b", ql)
+    month_map = {m:i for i,m in enumerate(["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"],1)}
+    month = None
+    for m, i in month_map.items():
+        if re.search(rf"\b{m}", ql):
+            month = i
+            break
+    if year and month:
+        return f"{year.group(1)}-{month:02d}"
+    return year.group(1) if year else None
+
+def _infer_region_from_query(q: str):
+    ql = (q or "").lower()
+    for st in US_STATE_LIKE:
+        if re.search(rf"\b{re.escape(st)}\b", ql):
+            return st
+    return None
+
+def _infer_variable_from_query(q: str):
+    ql = (q or "").lower()
+    for alias, canon in VARIABLE_CANON.items():
+        if re.search(rf"\b{re.escape(alias)}\b", ql):
+            return canon
+    return None
+
 def handle_chat_request(data):
     """
     ULTRA-DIRECT: Immediate function execution with Azure Maps detection
     """
     try:
         user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
-        logging.info(f"Processing chat request: {user_query}")
+        user_id = data.get("user_id", "default_user")
+        existing_thread_id = data.get("thread_id")  # NEW
+        logging.info(f"Processing chat request: {user_query} (user_id={user_id})")
+
+        # NEW follow-up early intercept (before coverage / prompt)
+        if _is_follow_up_query(user_query):
+            return _follow_up_response(user_query, user_id)
+
+        # NEW: retrieve recent structured map memories
+        recent_mem = memory_manager.recent_context(user_id, limit=3)
+        memory_snippets = [m.get("memory") for m in recent_mem if m.get("memory")]
+        recent_block = ""
+        if memory_snippets:
+            recent_block = "RECENT_CONTEXT:\n" + "\n".join(memory_snippets)
+
+        # NEW: reuse existing thread if provided
+        if existing_thread_id:
+            thread = type("T", (), {"id": existing_thread_id})
+            logging.info(f"Reusing thread: {existing_thread_id}")
+        else:
+            thread = project_client.agents.threads.create()
+            logging.info(f"Created thread: {thread.id}")
 
         # NEW: Coverage / availability shortcut
         if is_coverage_query(user_query):
@@ -119,15 +246,25 @@ def handle_chat_request(data):
                 "status": "coverage_info",
                 "content": coverage["summary"],
                 "coverage": coverage,
-                "agent_id": text_agent_id
+                "agent_id": text_agent_id,
+                "memory_context": memory_snippets  # NEW
             }
 
         # NEW: Lightweight heuristic signals for prompt conditioning
         q_lower = user_query.lower()
         has_var = any(k in q_lower for k in ["temperature","tair","precip","rain","rainf","humidity","qair","spi","drought","wind","pressure","psurf"])
         has_place = any(k in q_lower for k in ["florida","alaska","california","michigan","texas","ohio","virginia","colorado","arizona","georgia","maryland","nevada","oregon","washington"])
-        has_date_token = any(tok in q_lower for tok in [" 2020"," 2021"," 2022"," 2023"," jan"," feb"," mar"," apr"," may"," jun"," jul"," aug"," sep"," oct"," nov"," dec"])
+        has_date_token = any(tok in q_lower for tok in [" jan"," feb"," mar"," apr"," may"," jun"," jul"," aug"," sep"," oct"," nov"," dec"]) \
+                         or bool(re.search(r"\b20\d{2}\b", q_lower)) \
+                         or bool(ISO_DATE_PATTERN.search(q_lower))  # CHANGED
         minimal_context = not (has_var and (has_place or has_date_token))
+
+        # NEW: if variable+date remembered but missing region -> supply prior region if LAST_MAP_CONTEXT
+        if not has_place and has_var and has_date_token and user_id in LAST_MAP_CONTEXT:
+            prev_region = LAST_MAP_CONTEXT[user_id].get("region")
+            if prev_region:
+                logging.info("Auto-injecting previous region into minimal context query.")
+                user_query = f"{user_query} (previous region: {prev_region})"
 
         # Create a thread for the conversation
         thread = project_client.agents.threads.create()
@@ -135,6 +272,7 @@ def handle_chat_request(data):
 
         # UPDATED PROMPT: Only call execute_custom_code if query is actionable
         enhanced_query = f"""You are an NLDAS-3 hydrometeorological assistant.
+{recent_block}
 
 USER QUERY: \"{user_query}\"
 
@@ -340,10 +478,57 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                             if analysis_result.get("status") == "success":
                                 result_value = analysis_result.get("result", "No result")
 
+                                # NEW guard if result_value is None
+                                if result_value is None:
+                                    result_value = "No result produced."
+
                                 # UPDATED: Full map dict (dual URLs)
                                 if isinstance(result_value, dict) and ("overlay_url" in result_value or "static_url"):
                                     enriched = normalize_map_result_dict(result_value, user_query)
                                     enriched["temperature_data"] = build_temperature_data(enriched.get("geojson"))
+                                    # NEW: persist structured map context
+                                    try:
+                                        inferred_var = _infer_variable_from_query(user_query)
+                                        inferred_region = _infer_region_from_query(user_query)
+                                        date_scope = _infer_date_scope_from_query(user_query)
+                                        bounds = enriched.get("bounds")
+                                        # Optional color range from geojson sample
+                                        color_range = None
+                                        if enriched.get("geojson", {}).get("features"):
+                                            vals = []
+                                            for f in enriched["geojson"]["features"]:
+                                                v = f.get("properties", {}).get("value")
+                                                try:
+                                                    if v is not None:
+                                                        vals.append(float(v))
+                                                except:
+                                                    pass
+                                            if vals:
+                                                color_range = {"min": min(vals), "max": max(vals)}
+                                        memory_manager.add_structured(
+                                            user_id=user_id,
+                                            variable=inferred_var,
+                                            region=inferred_region,
+                                            date_str=date_scope,
+                                            bounds=bounds,
+                                            color_range=color_range
+                                        )
+                                        memory_manager.add(
+                                            f"[MAP_SUMMARY] variable={inferred_var} region={inferred_region} date={date_scope} bounds={bounds}",
+                                            user_id=user_id,
+                                            meta={"type": "map_summary"}
+                                        )
+                                        # Track last map in ephemeral dict
+                                        LAST_MAP_CONTEXT[user_id] = {
+                                            "variable": inferred_var,
+                                            "region": inferred_region,
+                                            "date": date_scope,
+                                            "bounds": bounds,
+                                            "static_url": enriched.get("static_url"),
+                                            "overlay_url": enriched.get("overlay_url")
+                                        }
+                                    except Exception as mem_err:
+                                        logging.debug(f"Memory persistence failed: {mem_err}")
                                     tool_outputs.append({
                                         "tool_call_id": tool_call.id,
                                         "output": json.dumps({"status": "success", "completed": True})
@@ -357,6 +542,7 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         "bounds": enriched["bounds"],
                                         "map_config": enriched["map_config"],
                                         "temperature_data": enriched["temperature_data"],  # NEW
+                                        "memory_context": memory_snippets,  # already there
                                         "type": "visualization_with_overlay",
                                         "agent_id": text_agent_id,
                                         "thread_id": thread.id,
@@ -380,10 +566,7 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         "bounds": enriched.get("bounds"),
                                         "map_config": enriched["map_config"],
                                         "temperature_data": enriched["temperature_data"],  # NEW
-                                        "type": "visualization_with_overlay",
-                                        "agent_id": text_agent_id,
-                                        "thread_id": thread.id,
-                                        "analysis_data": analysis_result
+                                        "memory_context": memory_snippets  # NEW
                                     }
 
                                 # IMPROVED: Clean up the response format - remove icons and make it conversational
@@ -435,7 +618,8 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         "elapsed_time": elapsed_time,
                                         "custom_code_executed": True
                                     },
-                                    "analysis_data": analysis_result
+                                    "analysis_data": analysis_result,
+                                    "memory_context": memory_snippets  # NEW
                                 }
                                 
                             else:
@@ -478,7 +662,8 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                 "type": "submission_failed_but_success",
                                 "agent_id": text_agent_id,
                                 "thread_id": thread.id,
-                                "analysis_data": analysis_data
+                                "analysis_data": analysis_data,
+                                "memory_context": memory_snippets  # NEW
                             }
                 
                 # Return if code executed
@@ -494,7 +679,8 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                             "elapsed_time": elapsed_time,
                             "custom_code_executed": True
                         },
-                        "analysis_data": analysis_data
+                        "analysis_data": analysis_data,
+                        "memory_context": memory_snippets  # NEW
                     }
             
             # Enhanced: Variable wait time based on status
@@ -519,6 +705,7 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                 "content": assistant_reply or "I can help with NLDAS-3 data. Specify a variable, location and date.",
                 "agent_id": text_agent_id,
                 "thread_id": thread.id,
+                "memory_context": memory_snippets,  # NEW
                 "debug": {
                     "iterations": iteration,
                     "elapsed_time": elapsed_time,
@@ -542,7 +729,8 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                 "type": "final_fallback_success",
                 "agent_id": text_agent_id,
                 "thread_id": thread.id,
-                "analysis_data": analysis_data
+                "analysis_data": analysis_data,
+                "memory_context": memory_snippets  # NEW
             }
         
         # Timeout response with more helpful message
@@ -553,6 +741,7 @@ result = f'The temperature is {temp_c:.1f}°C'""",
             "type": "iteration_limit_exceeded",
             "agent_id": text_agent_id,
             "thread_id": thread.id,
+            "memory_context": memory_snippets,  # NEW
             "debug": {
                 "iterations": iteration,
                 "max_iterations": max_iterations,
@@ -568,7 +757,8 @@ result = f'The temperature is {temp_c:.1f}°C'""",
         return {
             "status": "error",
             "content": str(e),
-            "error_type": type(e).__name__
+            "error_type": type(e).__name__,
+            "memory_context": []
         }
 
 def wrap_with_geo_overlay(static_url: str, original_query: str) -> dict:

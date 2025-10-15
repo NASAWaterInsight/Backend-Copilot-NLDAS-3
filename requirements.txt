@@ -14,3 +14,4 @@ cartopy
 shapely
 pyproj
 requests
+mem0ai>=0.1.5

@@ -7,6 +7,10 @@ import os
 import traceback
 from datetime import datetime
 import numpy as np
+import hashlib  # NEW
+import uuid  # NEW
+from agents.memory_manager import memory_manager  # NEW (safe import)
+from agents.dataset_metadata import build_coverage_response  # NEW
 
 # Configure logging first with more detailed output
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -141,9 +145,47 @@ logger.info(f"📊 Import status: AGENTS_IMPORTED = {AGENTS_IMPORTED}")
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
+def _hash_email(email: str) -> str:
+    try:
+        norm = email.strip().lower()
+        return hashlib.sha256(norm.encode()).hexdigest()[:32]
+    except Exception:
+        return "anonymous"
+
+def get_user_id(req: func.HttpRequest, body: dict) -> str:
+    """
+    Stable user identifier priority:
+      1. AAD principal header (X-MS-CLIENT-PRINCIPAL-ID)
+      2. Hashed email (X-User-Email header) if provided
+      3. X-User-Id header (frontend supplied UUID / hash)
+      4. body['user_id']
+      5. 'anonymous'
+    """
+    # 1: AAD principal id
+    principal = req.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
+    if principal:
+        return principal
+    # 2: Hashed email header
+    email = req.headers.get("X-User-Email")
+    if email:
+        return _hash_email(email)
+    # 3: Frontend stable ID header
+    hdr_uid = req.headers.get("X-User-Id")
+    if hdr_uid and hdr_uid.lower() != "anonymous":
+        return hdr_uid
+    # 4: Body user_id
+    if body:
+        bid = body.get("user_id")
+        if bid and bid.lower() != "anonymous":
+            return bid
+    # 5: Fallback
+    logging.warning("Stable user_id not supplied; using 'anonymous'")
+    return "anonymous"
+
 @app.route(route="multi_agent_function", auth_level=func.AuthLevel.ANONYMOUS)
 def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
-    logger.info('🚀 NLDAS-3 weather analysis request received.')
+    corr_id = str(uuid.uuid4())  # NEW
+    logger.info(f"[corr={corr_id}] 🚀 NLDAS-3 weather analysis request received.")
     logger.info(f'📊 Agent import status: {AGENTS_IMPORTED}')
 
     try:
@@ -153,14 +195,14 @@ def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
             if not req_body:
                 logger.error("❌ No request body provided")
                 return func.HttpResponse(
-                    safe_json_dumps({"error": "No request body provided"}),
+                    safe_json_dumps({"error": "No request body provided", "correlation_id": corr_id}),
                     status_code=400,
                     mimetype="application/json"
                 )
         except Exception as json_error:
             logger.error(f"❌ JSON parsing error: {json_error}")
             return func.HttpResponse(
-                safe_json_dumps({"error": f"Invalid JSON: {str(json_error)}"}),
+                safe_json_dumps({"error": f"Invalid JSON: {str(json_error)}", "correlation_id": corr_id}),
                 status_code=400,
                 mimetype="application/json"
             )
@@ -172,13 +214,13 @@ def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
             # Direct query format: {"query": "show me temperature..."}
             data = req_body
 
-        logger.info(f"📊 Processing request: {data}")
+        logger.info(f"[corr={corr_id}] 📊 Processing request: {data}")
 
         # Add request validation
         if not data or (not data.get("query") and not data.get("input")):
             logger.error("❌ No query or input provided")
             return func.HttpResponse(
-                safe_json_dumps({"error": "No query or input provided"}),
+                safe_json_dumps({"error": "No query or input provided", "correlation_id": corr_id}),
                 status_code=400,
                 mimetype="application/json"
             )
@@ -195,15 +237,25 @@ def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
                         "agents_imported": AGENTS_IMPORTED,
                         "import_error": IMPORT_ERROR_MSG,
                         "agents_directory": os.path.exists(agents_dir) if 'agents_dir' in locals() else "unknown"
-                    }
+                    },
+                    "correlation_id": corr_id
                 }),
                 status_code=503,
                 mimetype="application/json"
             )
 
+        # NEW: derive stable user_id early
+        user_id = get_user_id(req, data)
+        data["user_id"] = user_id  # ensure agent receives it
+        # OPTIONAL: pass session (future use)
+        session_id = req.headers.get("X-Session-Id")
+        if session_id:
+            data["session_id"] = session_id
+
+        logger.info(f"[corr={corr_id}] 🧠 Memory enabled={getattr(memory_manager,'enabled',False)} (user_id={user_id})")
+
         # Continue directly to unified chat handling
         user_query = data.get("query", data.get("input", ""))
-
         # Enhanced chat request handling
         try:
             logger.info("🎯 Calling handle_chat_request...")
@@ -216,7 +268,7 @@ def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
                 logger.info(f"📊 Response status: {response_status}")
             
             return func.HttpResponse(
-                safe_json_dumps({"response": response}),
+                safe_json_dumps({"response": response, "correlation_id": corr_id}),
                 status_code=200,
                 mimetype="application/json"
             )
@@ -230,7 +282,8 @@ def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
                 safe_json_dumps({
                     "error": f"Chat processing failed: {str(chat_error)}",
                     "error_type": type(chat_error).__name__,
-                    "traceback": traceback.format_exc()[-500:]  # Last 500 chars
+                    "traceback": traceback.format_exc()[-500:],  # Last 500 chars
+                    "correlation_id": corr_id
                 }),
                 status_code=500,
                 mimetype="application/json"
@@ -246,7 +299,8 @@ def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
                 "error": f"System error: {str(e)}",
                 "error_type": type(e).__name__,
                 "message": "Function completed with error but did not crash",
-                "traceback": traceback.format_exc()[-500:]
+                "traceback": traceback.format_exc()[-500:],
+                "correlation_id": corr_id
             }),
             status_code=500,
             mimetype="application/json"
@@ -255,13 +309,21 @@ def multi_agent_function(req: func.HttpRequest) -> func.HttpResponse:
 # Add a health check endpoint
 @app.route(route="health", auth_level=func.AuthLevel.ANONYMOUS)
 def health_check(req: func.HttpRequest) -> func.HttpResponse:
+    coverage = build_coverage_response()  # NEW
+    mem_diag = getattr(memory_manager, "validate_env", lambda: {"enabled": False})()  # NEW
     return func.HttpResponse(
         safe_json_dumps({
             "status": "healthy",
             "message": "NLDAS-3 function app is running",
             "timestamp": str(datetime.utcnow()),
             "agents_imported": AGENTS_IMPORTED,
-            "import_error": IMPORT_ERROR_MSG if not AGENTS_IMPORTED else None
+            "import_error": IMPORT_ERROR_MSG if not AGENTS_IMPORTED else None,
+            "memory": mem_diag,          # NEW
+            "coverage_years": {
+                "forcing": coverage["metadata"]["forcing"]["years_available"],
+                "spi_range": [coverage["metadata"]["spi"]["years_available"][0],
+                              coverage["metadata"]["spi"]["years_available"][-1]]
+            }
         }),
         status_code=200,
         mimetype="application/json"
