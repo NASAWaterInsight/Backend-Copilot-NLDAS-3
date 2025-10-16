@@ -83,6 +83,49 @@ CALL execute_custom_code NOW!"""
         )
         logging.info(f"Started run: {run.id}")
         
+        # NEW: Detect analysis queries and handle them directly - FIXED RETURN FORMAT
+        analysis_keywords = ['most significant', 'most extreme', 'hottest', 'coldest', 'warmest', 'wettest', 'driest', 'highest', 'lowest', 'top', 'worst', 'best', 'find', 'where are']
+        is_analysis_query = any(phrase in user_query.lower() for phrase in analysis_keywords)
+        
+        if is_analysis_query:
+            logging.info(f"🔍 Detected analysis query - using direct analysis function")
+            try:
+                from .dynamic_code_generator import analyze_extreme_regions
+                analysis_result = analyze_extreme_regions(user_query)
+                
+                if analysis_result.get("status") == "success":
+                    result_value = analysis_result.get("result")
+                    
+                    # FIXED: Return the complete structured analysis response that frontend expects
+                    return {
+                        "status": "success",
+                        "content": f"Analysis completed: Found {len(result_value.get('regions', []))} extreme regions",
+                        "analysis_data": analysis_result,
+                        "type": "analysis_complete",
+                        # CRITICAL: Add these fields that frontend expects for analysis results
+                        "regions": result_value.get("regions", []),
+                        "geojson": result_value.get("geojson", {}),
+                        "bounds": result_value.get("bounds", {}),
+                        "map_config": result_value.get("map_config", {}),
+                        "variable": result_value.get("variable"),
+                        "analysis_type": result_value.get("analysis_type"),
+                        # NEW: Add temperature_data for consistency with other responses
+                        "temperature_data": build_temperature_data(result_value.get("geojson", {})),
+                        "agent_id": text_agent_id,
+                        "thread_id": thread.id
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "content": f"Analysis failed: {analysis_result.get('error', 'Unknown error')}",
+                        "type": "analysis_error"
+                    }
+                    
+            except Exception as analysis_error:
+                logging.error(f"❌ Direct analysis failed: {analysis_error}")
+                # Fall back to agent-based processing
+                logging.info("🔄 Falling back to agent-based analysis")
+
         # ENHANCED: Better timeout strategy with status-specific handling
         max_iterations = 15  # Slight increase, but not the main fix
         iteration = 0

@@ -3,7 +3,220 @@ import logging
 import traceback
 import builtins
 
-
+def analyze_extreme_regions(user_request: str):
+    """
+    Pre-written analysis function that finds extreme regions without agent code generation.
+    This bypasses the agent entirely for analysis queries.
+    """
+    try:
+        import re
+        import numpy as np
+        import builtins  # CRITICAL: Add this import
+        from .weather_tool import (
+            load_specific_date_kerchunk, 
+            load_specific_month_spi_kerchunk,
+            get_account_key,
+            ACCOUNT_NAME
+        )
+        
+        logging.info(f"🔍 Direct analysis function called for: {user_request}")
+        
+        user_query_lower = user_request.lower()
+        
+        # Extract number of regions (default 3)
+        num_regions = 3
+        num_match = re.search(r'(\d+)', user_request)
+        if num_match:
+            num_regions = int(num_match.group(1))
+        
+        # Dynamic coordinate detection using EXACT pattern from instructions
+        if 'maryland' in user_query_lower:
+            lat_min, lat_max = 38.8, 39.8
+            lon_min, lon_max = -79.5, -75.0
+            region_name = 'Maryland'
+        elif 'florida' in user_query_lower:
+            lat_min, lat_max = 24.5, 31.0
+            lon_min, lon_max = -87.6, -80.0
+            region_name = 'Florida'
+        elif 'california' in user_query_lower:
+            lat_min, lat_max = 32.5, 42.0
+            lon_min, lon_max = -124.4, -114.1
+            region_name = 'California'
+        else:
+            lat_min, lat_max = 38.8, 39.8
+            lon_min, lon_max = -79.5, -75.0
+            region_name = 'Maryland'
+        
+        # Extract year and month using EXACT pattern
+        year_match = re.search(r'(20\d{2})', user_request)
+        year = int(year_match.group(1)) if year_match else 2020
+        
+        month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_request.lower())
+        month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
+        month = month_names.index(month_match.group(1)) + 1 if month_match else 5
+        
+        # Get account key
+        account_key = get_account_key()
+        
+        # FIXED: Use SPI for drought analysis, temperature for others
+        if 'spi' in user_query_lower or 'drought' in user_query_lower:
+            variable_type = 'SPI3'
+            analysis_type = 'most significant drought regions'
+            
+            # Load SPI data with CORRECT syntax
+            ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
+            data = ds[variable_type].sel(
+                latitude=builtins.slice(lat_min, lat_max), 
+                longitude=builtins.slice(lon_min, lon_max)
+            )
+            coord_names = ('latitude', 'longitude')
+        else:
+            variable_type = 'Tair'
+            analysis_type = 'extreme temperature regions'
+            
+            # Load regular data
+            ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, 15)
+            data = ds[variable_type].sel(
+                lat=builtins.slice(lat_min, lat_max),
+                lon=builtins.slice(lon_min, lon_max)
+            ).mean(dim='time')
+            if variable_type == 'Tair':
+                data = data - 273.15
+            coord_names = ('lat', 'lon')
+        
+        # Squeeze extra dimensions
+        if hasattr(data, 'squeeze'):
+            data = data.squeeze()
+        
+        # Get coordinate arrays and data values CORRECTLY
+        if variable_type == 'SPI3':
+            lon_vals = data.longitude.values
+            lat_vals = data.latitude.values
+        else:
+            lon_vals = data.lon.values
+            lat_vals = data.lat.values
+        
+        data_vals = data.values
+        
+        # FIXED: Use np.meshgrid and flatten for analysis
+        lon_grid, lat_grid = np.meshgrid(lon_vals, lat_vals)
+        flat_data = data_vals.flatten()
+        flat_lon = lon_grid.flatten()
+        flat_lat = lat_grid.flatten()
+        
+        # Remove NaN values
+        valid_mask = ~np.isnan(flat_data)
+        valid_data = flat_data[valid_mask]
+        valid_lon = flat_lon[valid_mask]
+        valid_lat = flat_lat[valid_mask]
+        
+        if len(valid_data) == 0:
+            ds.close()
+            return {
+                "status": "error",
+                "error": f"No valid data found for {region_name} in {month_names[month-1]} {year}"
+            }
+        
+        # FIXED: Find actual most extreme values using np.argsort
+        if variable_type == 'SPI3' or 'drought' in user_query_lower:
+            # For drought, lowest values are most significant
+            extreme_indices = np.argsort(valid_data)[:num_regions]
+        elif 'hottest' in user_query_lower or 'warmest' in user_query_lower:
+            extreme_indices = np.argsort(valid_data)[-num_regions:][::-1]
+        elif 'coldest' in user_query_lower:
+            extreme_indices = np.argsort(valid_data)[:num_regions]
+        else:
+            # Default to most extreme drought conditions
+            extreme_indices = np.argsort(valid_data)[:num_regions]
+        
+        # Build results with CORRECT severity classification
+        regions = []
+        for i, idx in enumerate(extreme_indices):
+            value = float(valid_data[idx])
+            lat_coord = float(valid_lat[idx])
+            lon_coord = float(valid_lon[idx])
+            
+            # Determine severity correctly
+            if variable_type == 'SPI3':
+                if value <= -2.0:
+                    severity = "extreme drought"
+                elif value <= -1.5:
+                    severity = "severe drought"
+                elif value <= -1.0:
+                    severity = "moderate drought"
+                elif value <= -0.5:
+                    severity = "mild drought"
+                else:
+                    severity = "near normal"
+            else:
+                median_temp = float(np.median(valid_data))
+                if value > median_temp:
+                    severity = "hottest"
+                else:
+                    severity = "coldest"
+            
+            regions.append({
+                "rank": i + 1,
+                "latitude": lat_coord,
+                "longitude": lon_coord,
+                "value": value,
+                "severity": severity
+            })
+        
+        # Create GeoJSON - FIXED format
+        geo_features = []
+        for region in regions:
+            geo_features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [region["longitude"], region["latitude"]]
+                },
+                "properties": {
+                    "rank": region["rank"],
+                    "value": region["value"],
+                    "severity": region["severity"],
+                    "variable": variable_type
+                }
+            })
+        
+        geojson = {"type": "FeatureCollection", "features": geo_features}
+        bounds = {
+            "north": float(lat_max),
+            "south": float(lat_min), 
+            "east": float(lon_max),
+            "west": float(lon_min)
+        }
+        map_config = {
+            "center": [float((lon_min + lon_max)/2), float((lat_min + lat_max)/2)],
+            "zoom": 7,
+            "style": "satellite",
+            "overlay_mode": True
+        }
+        
+        ds.close()
+        
+        result = {
+            "analysis_type": analysis_type,
+            "variable": variable_type,
+            "regions": regions,
+            "geojson": geojson,
+            "bounds": bounds,
+            "map_config": map_config
+        }
+        
+        logging.info(f"✅ Direct analysis completed: found {len(regions)} regions")
+        return {
+            "status": "success",
+            "result": result
+        }
+        
+    except Exception as e:
+        logging.error(f"❌ Direct analysis failed: {e}")
+        return {
+            "status": "error",
+            "error": f"Analysis failed: {str(e)}"
+        }
 
 def execute_custom_code(args: dict):
     """
@@ -12,6 +225,14 @@ def execute_custom_code(args: dict):
     try:
         user_request = args.get("user_request", "Unknown request")
         python_code = args.get("python_code", "")
+
+        # NEW: Check if this is an analysis query and handle directly
+        analysis_keywords = ['most significant', 'most extreme', 'hottest', 'coldest', 'warmest', 'wettest', 'driest', 'highest', 'lowest', 'top', 'worst', 'best', 'find', 'where are']
+        is_analysis_query = any(phrase in user_request.lower() for phrase in analysis_keywords)
+        
+        if is_analysis_query:
+            logging.info(f"🎯 Detected analysis query - calling direct analysis function")
+            return analyze_extreme_regions(user_request)
         
         if not python_code:
             return {
