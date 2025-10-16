@@ -98,7 +98,7 @@ CRITICAL: ONLY use these exact function names (no others exist):
 - save_animation_to_blob(anim, filename, account_key)
 - save_plot_to_blob_simple(fig, filename, account_key)
 - create_cartopy_map(lon, lat, data, title, colorbar_label, cmap)
-- create_geotiff_overlay(data.values, data.lon, data.lat, 'filename.tif', account_key)
+- create_geotiff_overlay(data.values, data.lon, data.lat, 'filename.tif', account_key, variable_type, colormap_name)
 
 # Extract location from user request dynamically
 user_query_lower = user_request.lower()
@@ -370,10 +370,10 @@ lon_min, lon_max = -87.6, -80.0
 ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 21)
 data = ds['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).sum(dim='time')
 
-# Create GeoTIFF overlay
+# Create COLORED GeoTIFF overlay with precipitation colormap
 timestamp = int(time.time())
 geotiff_filename = f'precip_overlay_{timestamp}.tif'
-geotiff_url = create_geotiff_overlay(data.values, data.lon, data.lat, geotiff_filename, account_key)
+geotiff_url = create_geotiff_overlay(data.values, data.lon, data.lat, geotiff_filename, account_key, 'Rainf', 'Blues')
 
 # Create static map
 fig, ax = create_cartopy_map(data.lon, data.lat, data.values, 'Precipitation', 'Precipitation (mm)', 'Blues')
@@ -409,7 +409,7 @@ result = {
 }
 ```
 
-FOR SINGLE TEMPERATURE MAPS - copy this pattern (WITH GeoTIFF):
+FOR SINGLE TEMPERATURE MAPS - copy this pattern (WITH COLORED GeoTIFF):
 ```python
 import builtins, json, numpy as np, time
 lat_min, lat_max = 24.5, 31.0
@@ -417,10 +417,10 @@ lon_min, lon_max = -87.6, -80.0
 ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 15)
 data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).mean(dim='time') - 273.15
 
-# Create GeoTIFF overlay
+# Create COLORED GeoTIFF overlay with temperature colormap
 timestamp = int(time.time())
 geotiff_filename = f'temp_overlay_{timestamp}.tif'
-geotiff_url = create_geotiff_overlay(data.values, data.lon, data.lat, geotiff_filename, account_key)
+geotiff_url = create_geotiff_overlay(data.values, data.lon, data.lat, geotiff_filename, account_key, 'Tair', 'RdYlBu_r')
 
 # Create static map
 fig, ax = create_cartopy_map(data.lon, data.lat, data.values, 'Temperature', 'Temperature (°C)', 'RdYlBu_r')
@@ -483,7 +483,7 @@ except Exception as e:
     result = f"Animation failed, showing static map: {url}"
 ```
 
-FOR SPI MAPS (WITH GeoTIFF):
+FOR SPI MAPS (WITH COLORED GeoTIFF):
 ```python
 import builtins, json, numpy as np, time
 lat_min, lat_max = 32.0, 42.0
@@ -492,10 +492,10 @@ ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2020, 5)
 data = ds['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
 if hasattr(data, 'squeeze'): data = data.squeeze()
 
-# Create GeoTIFF overlay
+# Create COLORED GeoTIFF overlay with SPI colormap
 timestamp = int(time.time())
 geotiff_filename = f'spi_overlay_{timestamp}.tif'
-geotiff_url = create_geotiff_overlay(data.values, data.longitude, data.latitude, geotiff_filename, account_key)
+geotiff_url = create_geotiff_overlay(data.values, data.longitude, data.latitude, geotiff_filename, account_key, 'SPI3', 'RdBu')
 
 # Create static map
 fig, ax = create_spi_map_with_categories(data.longitude, data.latitude, data.values,

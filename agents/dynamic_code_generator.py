@@ -1279,12 +1279,12 @@ def execute_custom_code(args: dict):
             "status": "error",
             "error": f"Function setup failed: {error_msg}",
             "user_request": args.get("user_request", "Unknown")
-
         }
-def create_geotiff_overlay(data, lon_coords, lat_coords, filename, account_key):
+
+def create_geotiff_overlay(data, lon_coords, lat_coords, filename, account_key, variable_type=None, colormap_name=None):
     """
-    Create a GeoTIFF file from weather data and upload to blob storage
-    ROBUST VERSION: No graceful failures, works for all data types
+    Create a COLORED GeoTIFF file with embedded colormap and upload to blob storage
+    ENHANCED VERSION: Includes colormap for frontend display
     """
     try:
         from osgeo import gdal, osr
@@ -1294,9 +1294,12 @@ def create_geotiff_overlay(data, lon_coords, lat_coords, filename, account_key):
         from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
         from datetime import datetime, timedelta
         from .weather_tool import ACCOUNT_NAME
+        import matplotlib.pyplot as plt
+        import matplotlib.colors as mcolors
         
-        logging.info(f"🗺️ Creating GeoTIFF: {filename}")
+        logging.info(f"🗺️ Creating COLORED GeoTIFF: {filename}")
         logging.info(f"🗺️ Data shape: {data.shape}, dtype: {data.dtype}")
+        logging.info(f"🎨 Variable type: {variable_type}, Colormap: {colormap_name}")
         
         # Handle different input formats consistently
         if hasattr(lon_coords, 'values'):
@@ -1346,16 +1349,6 @@ def create_geotiff_overlay(data, lon_coords, lat_coords, filename, account_key):
         logging.info(f"🗺️ Bounds: W={lon_min:.6f}, E={lon_max:.6f}, S={lat_min:.6f}, N={lat_max:.6f}")
         logging.info(f"🗺️ Pixel size: {pixel_width:.6f} x {pixel_height:.6f}")
         
-        # Create GeoTIFF
-        driver = gdal.GetDriverByName('GTiff')
-        mem_driver = gdal.GetDriverByName('MEM')
-        
-        # Create in-memory dataset
-        mem_dataset = mem_driver.Create('', cols, rows, 1, gdal.GDT_Float32)
-        
-        if mem_dataset is None:
-            raise RuntimeError("Failed to create GDAL dataset")
-        
         # Handle data orientation for proper display
         if lat_coords[0] < lat_coords[-1]:  # South to North
             logging.info("🔄 Flipping data for north-up orientation")
@@ -1363,36 +1356,104 @@ def create_geotiff_overlay(data, lon_coords, lat_coords, filename, account_key):
         else:
             final_data = georef_data
         
-        # Replace NaN with nodata value
-        nodata_value = -9999.0
-        clean_data = np.where(np.isnan(final_data), nodata_value, final_data.astype(np.float32))
+        # NEW: Determine colormap and data range based on variable type
+        if variable_type == 'SPI3' or 'spi' in filename.lower():
+            # SPI data: fixed range -2.5 to 2.5
+            data_min, data_max = -2.5, 2.5
+            colormap_name = 'RdBu'
+            logging.info("🎨 Using SPI colormap: RdBu with range -2.5 to 2.5")
+        elif variable_type == 'Tair' or 'temp' in filename.lower():
+            # Temperature data: use actual data range
+            valid_data = final_data[~np.isnan(final_data)]
+            if len(valid_data) > 0:
+                data_min, data_max = float(valid_data.min()), float(valid_data.max())
+            else:
+                data_min, data_max = -20.0, 40.0  # Fallback
+            colormap_name = 'RdYlBu_r'
+            logging.info(f"🎨 Using temperature colormap: RdYlBu_r with range {data_min:.1f} to {data_max:.1f}")
+        elif variable_type == 'Rainf' or 'precip' in filename.lower():
+            # Precipitation data: 0 to max
+            valid_data = final_data[~np.isnan(final_data)]
+            if len(valid_data) > 0:
+                data_min, data_max = 0.0, float(valid_data.max())
+            else:
+                data_min, data_max = 0.0, 100.0  # Fallback
+            colormap_name = 'Blues'
+            logging.info(f"🎨 Using precipitation colormap: Blues with range {data_min:.1f} to {data_max:.1f}")
+        else:
+            # Default: use actual data range
+            valid_data = final_data[~np.isnan(final_data)]
+            if len(valid_data) > 0:
+                data_min, data_max = float(valid_data.min()), float(valid_data.max())
+            else:
+                data_min, data_max = 0.0, 1.0  # Fallback
+            colormap_name = colormap_name or 'viridis'
+            logging.info(f"🎨 Using default colormap: {colormap_name} with range {data_min:.1f} to {data_max:.1f}")
         
-        # Write data to raster band
-        band = mem_dataset.GetRasterBand(1)
-        band.SetNoDataValue(nodata_value)
-        result = band.WriteArray(clean_data)
+        # NEW: Convert data to color indices (0-255)
+        # Normalize data to 0-255 range for colormap application
+        normalized_data = np.clip((final_data - data_min) / (data_max - data_min), 0, 1)
+        color_indices = (normalized_data * 255).astype(np.uint8)
         
-        if result != gdal.CE_None:
-            raise RuntimeError(f"Failed to write array to raster band")
+        # Handle NaN values by setting them to 0 (will be marked as nodata)
+        nan_mask = np.isnan(final_data)
+        color_indices[nan_mask] = 0
         
-        # Set geotransform
-        mem_dataset.SetGeoTransform(geotransform)
+        # Create GeoTIFF with RGB bands instead of single band
+        driver = gdal.GetDriverByName('GTiff')
         
-        # Set WGS84 projection
+        # Create RGB GeoTIFF (3 bands)
+        temp_path = f'/tmp/{filename}'
+        dataset = driver.Create(temp_path, cols, rows, 3, gdal.GDT_Byte)
+        
+        if dataset is None:
+            raise RuntimeError("Failed to create GDAL dataset")
+        
+        # Set geotransform and projection
+        dataset.SetGeoTransform(geotransform)
+        
         srs = osr.SpatialReference()
         srs.ImportFromEPSG(4326)
-        mem_dataset.SetProjection(srs.ExportToWkt())
+        dataset.SetProjection(srs.ExportToWkt())
         
-        # Save to temp file
-        temp_path = f'/tmp/{filename}'
-        result = driver.CreateCopy(temp_path, mem_dataset)
+        # NEW: Apply colormap to create RGB data
+        # Get matplotlib colormap
+        cmap = plt.get_cmap(colormap_name)
         
-        if result is None:
-            raise RuntimeError("Failed to save GeoTIFF to temporary file")
+        # Create RGB arrays
+        rgb_data = cmap(normalized_data)  # Returns RGBA, shape (rows, cols, 4)
         
-        # Close datasets
-        mem_dataset = None
-        result = None
+        # Extract RGB channels (ignore alpha)
+        red_band = (rgb_data[:, :, 0] * 255).astype(np.uint8)
+        green_band = (rgb_data[:, :, 1] * 255).astype(np.uint8)
+        blue_band = (rgb_data[:, :, 2] * 255).astype(np.uint8)
+        
+        # Set nodata pixels to transparent (white or specific color)
+        red_band[nan_mask] = 255
+        green_band[nan_mask] = 255
+        blue_band[nan_mask] = 255
+        
+        # Write RGB bands
+        band_r = dataset.GetRasterBand(1)  # Red
+        band_g = dataset.GetRasterBand(2)  # Green
+        band_b = dataset.GetRasterBand(3)  # Blue
+        
+        band_r.WriteArray(red_band)
+        band_g.WriteArray(green_band)
+        band_b.WriteArray(blue_band)
+        
+        # NEW: Add metadata about the colormap and data range
+        dataset.SetMetadata({
+            'COLORMAP_NAME': colormap_name,
+            'DATA_MIN': str(data_min),
+            'DATA_MAX': str(data_max),
+            'VARIABLE_TYPE': variable_type or 'unknown',
+            'CREATION_TIME': datetime.utcnow().isoformat(),
+            'DESCRIPTION': f'Colored GeoTIFF for {variable_type or "data"} with embedded {colormap_name} colormap'
+        })
+        
+        # Close dataset to ensure data is written
+        dataset = None
         
         # Verify file exists and has content
         if not os.path.exists(temp_path):
@@ -1402,7 +1463,7 @@ def create_geotiff_overlay(data, lon_coords, lat_coords, filename, account_key):
         if file_size == 0:
             raise RuntimeError("GeoTIFF file is empty")
         
-        logging.info(f"📁 GeoTIFF file size: {file_size/1024:.1f} KB")
+        logging.info(f"📁 Colored GeoTIFF file size: {file_size/1024:.1f} KB")
         
         # Upload to blob storage
         with open(temp_path, 'rb') as f:
@@ -1443,10 +1504,11 @@ def create_geotiff_overlay(data, lon_coords, lat_coords, filename, account_key):
         # Cleanup
         os.unlink(temp_path)
         
-        logging.info(f"✅ GeoTIFF created successfully: {url}")
+        logging.info(f"✅ Colored GeoTIFF created successfully: {url}")
+        logging.info(f"🎨 Colormap: {colormap_name}, Range: {data_min:.2f} to {data_max:.2f}")
         return url
         
     except Exception as e:
-        logging.error(f"❌ GeoTIFF creation failed: {e}")
+        logging.error(f"❌ Colored GeoTIFF creation failed: {e}")
         # NO GRACEFUL FAILURE - Re-raise the error
-        raise RuntimeError(f"GeoTIFF creation failed: {str(e)}")
+        raise RuntimeError(f"Colored GeoTIFF creation failed: {str(e)}")
