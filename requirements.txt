@@ -14,3 +14,4 @@ cartopy
 shapely
 pyproj
 requests
+GDAL>=3.4.0

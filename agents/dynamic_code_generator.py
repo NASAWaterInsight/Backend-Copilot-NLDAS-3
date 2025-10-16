@@ -1076,18 +1076,19 @@ def execute_custom_code(args: dict):
                 'load_and_combine_multi_day_data': load_and_combine_multi_day_data,
                 'load_multi_day_time_series': load_multi_day_time_series,
                 
-                # ENHANCED: Animation functions with geographic features
+                # Animation functions
                 'save_animation_to_blob': save_animation_to_blob,
                 'create_multi_day_animation': create_multi_day_animation,
                 'add_city_labels_for_region': add_city_labels_for_region,
                 
-                # CRITICAL FIX: Add the MISSING create_cartopy_map functions
+                # Map creation functions
                 'create_cartopy_map': create_cartopy_map,
                 'create_cartopy_map_with_cities': create_cartopy_map_with_cities,
-                # NEW: Add enhanced SPI visualization
                 'create_spi_map_with_categories': create_spi_map_with_categories,
-                # NEW: Add SPI multi-year animation
                 'create_spi_multi_year_animation': create_spi_multi_year_animation,
+                
+                # CRITICAL: Add GeoTIFF function to execution environment
+                'create_geotiff_overlay': create_geotiff_overlay,
             })
             
             logging.info(f"Weather functions loaded successfully. Total functions in exec_globals: {len([k for k, v in exec_globals.items() if callable(v)])}")
@@ -1278,4 +1279,174 @@ def execute_custom_code(args: dict):
             "status": "error",
             "error": f"Function setup failed: {error_msg}",
             "user_request": args.get("user_request", "Unknown")
+
         }
+def create_geotiff_overlay(data, lon_coords, lat_coords, filename, account_key):
+    """
+    Create a GeoTIFF file from weather data and upload to blob storage
+    ROBUST VERSION: No graceful failures, works for all data types
+    """
+    try:
+        from osgeo import gdal, osr
+        import numpy as np
+        import tempfile
+        import os
+        from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
+        from datetime import datetime, timedelta
+        from .weather_tool import ACCOUNT_NAME
+        
+        logging.info(f"🗺️ Creating GeoTIFF: {filename}")
+        logging.info(f"🗺️ Data shape: {data.shape}, dtype: {data.dtype}")
+        
+        # Handle different input formats consistently
+        if hasattr(lon_coords, 'values'):
+            lon_coords = lon_coords.values
+        if hasattr(lat_coords, 'values'):
+            lat_coords = lat_coords.values
+        if hasattr(data, 'values'):
+            data = data.values
+            
+        # Ensure numpy arrays
+        lon_coords = np.array(lon_coords)
+        lat_coords = np.array(lat_coords)
+        data = np.array(data)
+        
+        # Validate data
+        if data.size == 0:
+            raise ValueError("Input data array is empty")
+        
+        # Handle 2D data
+        if len(data.shape) != 2:
+            raise ValueError(f"Expected 2D data, got shape {data.shape}")
+            
+        rows, cols = data.shape
+        
+        # Check coordinate alignment
+        if len(lat_coords) == rows and len(lon_coords) == cols:
+            logging.info("✅ Data orientation: (lat, lon)")
+            georef_data = data
+        elif len(lon_coords) == rows and len(lat_coords) == cols:
+            logging.info("🔄 Data orientation: (lon, lat) - transposing")
+            georef_data = data.T
+            rows, cols = georef_data.shape
+            lat_coords, lon_coords = lon_coords, lat_coords
+        else:
+            raise ValueError(f"Coordinate mismatch: data {data.shape}, lats {len(lat_coords)}, lons {len(lon_coords)}")
+        
+        # Calculate geotransform
+        lon_min, lon_max = float(lon_coords.min()), float(lon_coords.max())
+        lat_min, lat_max = float(lat_coords.min()), float(lat_coords.max())
+        
+        pixel_width = (lon_max - lon_min) / cols
+        pixel_height = (lat_max - lat_min) / rows
+        
+        # GDAL geotransform: [top_left_x, pixel_width, rotation, top_left_y, rotation, -pixel_height]
+        geotransform = [lon_min, pixel_width, 0, lat_max, 0, -pixel_height]
+        
+        logging.info(f"🗺️ Bounds: W={lon_min:.6f}, E={lon_max:.6f}, S={lat_min:.6f}, N={lat_max:.6f}")
+        logging.info(f"🗺️ Pixel size: {pixel_width:.6f} x {pixel_height:.6f}")
+        
+        # Create GeoTIFF
+        driver = gdal.GetDriverByName('GTiff')
+        mem_driver = gdal.GetDriverByName('MEM')
+        
+        # Create in-memory dataset
+        mem_dataset = mem_driver.Create('', cols, rows, 1, gdal.GDT_Float32)
+        
+        if mem_dataset is None:
+            raise RuntimeError("Failed to create GDAL dataset")
+        
+        # Handle data orientation for proper display
+        if lat_coords[0] < lat_coords[-1]:  # South to North
+            logging.info("🔄 Flipping data for north-up orientation")
+            final_data = np.flipud(georef_data)
+        else:
+            final_data = georef_data
+        
+        # Replace NaN with nodata value
+        nodata_value = -9999.0
+        clean_data = np.where(np.isnan(final_data), nodata_value, final_data.astype(np.float32))
+        
+        # Write data to raster band
+        band = mem_dataset.GetRasterBand(1)
+        band.SetNoDataValue(nodata_value)
+        result = band.WriteArray(clean_data)
+        
+        if result != gdal.CE_None:
+            raise RuntimeError(f"Failed to write array to raster band")
+        
+        # Set geotransform
+        mem_dataset.SetGeoTransform(geotransform)
+        
+        # Set WGS84 projection
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(4326)
+        mem_dataset.SetProjection(srs.ExportToWkt())
+        
+        # Save to temp file
+        temp_path = f'/tmp/{filename}'
+        result = driver.CreateCopy(temp_path, mem_dataset)
+        
+        if result is None:
+            raise RuntimeError("Failed to save GeoTIFF to temporary file")
+        
+        # Close datasets
+        mem_dataset = None
+        result = None
+        
+        # Verify file exists and has content
+        if not os.path.exists(temp_path):
+            raise RuntimeError("GeoTIFF file was not created")
+            
+        file_size = os.path.getsize(temp_path)
+        if file_size == 0:
+            raise RuntimeError("GeoTIFF file is empty")
+        
+        logging.info(f"📁 GeoTIFF file size: {file_size/1024:.1f} KB")
+        
+        # Upload to blob storage
+        with open(temp_path, 'rb') as f:
+            geotiff_data = f.read()
+        
+        blob_service_client = BlobServiceClient(
+            account_url=f"https://{ACCOUNT_NAME}.blob.core.windows.net",
+            credential=account_key
+        )
+        
+        container_name = "geotiff-overlays"
+        
+        # Ensure container exists
+        try:
+            container_client = blob_service_client.get_container_client(container_name)
+            if not container_client.exists():
+                blob_service_client.create_container(container_name)
+                logging.info(f"Created container: {container_name}")
+        except Exception as container_error:
+            logging.warning(f"Container creation warning: {container_error}")
+        
+        # Upload blob
+        blob_client = blob_service_client.get_blob_client(container=container_name, blob=filename)
+        blob_client.upload_blob(geotiff_data, overwrite=True)
+        
+        # Generate SAS URL
+        sas_token = generate_blob_sas(
+            account_name=ACCOUNT_NAME,
+            container_name=container_name,
+            blob_name=filename,
+            account_key=account_key,
+            permission=BlobSasPermissions(read=True),
+            expiry=datetime.utcnow() + timedelta(hours=24)
+        )
+        
+        url = f"https://{ACCOUNT_NAME}.blob.core.windows.net/{container_name}/{filename}?{sas_token}"
+        
+        # Cleanup
+        os.unlink(temp_path)
+        
+        logging.info(f"✅ GeoTIFF created successfully: {url}")
+        return url
+        
+    except Exception as e:
+        logging.error(f"❌ GeoTIFF creation failed: {e}")
+        # NO GRACEFUL FAILURE - Re-raise the error
+        raise RuntimeError(f"GeoTIFF creation failed: {str(e)}")

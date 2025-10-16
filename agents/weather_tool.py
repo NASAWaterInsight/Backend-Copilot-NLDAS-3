@@ -712,4 +712,3 @@ def load_specific_month_spi_kerchunk(account_name: str, account_key: str, year: 
         error_msg = f"Failed to load SPI data for {year:04d}-{month:02d}: {str(e)}"
         logging.error(error_msg)
         raise Exception(error_msg)
-
