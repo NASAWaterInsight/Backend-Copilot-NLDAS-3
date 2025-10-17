@@ -7,6 +7,12 @@ from PIL import Image
 import io
 import logging
 from scipy.ndimage import zoom
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend for server use
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
+from matplotlib.colors import Normalize, LinearSegmentedColormap
 
 router = APIRouter()
 
