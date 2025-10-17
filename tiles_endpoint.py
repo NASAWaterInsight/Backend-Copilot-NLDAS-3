@@ -68,6 +68,7 @@ async def get_weather_tile(
 ):
     """
     Generate a 256x256 weather tile with REGION-SPECIFIC color scale
+    ✅ ALWAYS returns exactly 256x256 pixels for Azure Maps compatibility
     """
     try:
         logging.info(f"🗺️ Tile request: {variable}/{date}/{z}/{x}/{y}")
@@ -167,19 +168,29 @@ async def get_weather_tile(
             values = np.flipud(values)
         
         # STEP 9: Resample to 256x256
-        if values.shape != (256, 256):
-            target_height, target_width = 256, 256
-            zoom_y = target_height / values.shape[0]
-            zoom_x = target_width / values.shape[1]
+        target_size = 256  # ✅ ALWAYS 256x256 for web map compatibility
+        
+        if values.shape != (target_size, target_size):
+            zoom_y = target_size / values.shape[0]
+            zoom_x = target_size / values.shape[1]
             
-            logging.info(f"📏 Resampling from {values.shape} to (256, 256)")
+            logging.info(f"📏 Resampling from {values.shape} to ({target_size}, {target_size})")
             values = zoom(values, (zoom_y, zoom_x), order=1, mode='nearest')
+            
+            # Verify exact size after resampling
+            if values.shape != (target_size, target_size):
+                # Force exact size if zoom didn't get it perfect
+                from skimage.transform import resize
+                values = resize(values, (target_size, target_size), preserve_range=True, anti_aliasing=True)
+        
+        # Final verification
+        assert values.shape == (target_size, target_size), f"Tile must be exactly {target_size}x{target_size}, got {values.shape}"
         
         # ✅ STEP 10: Apply REGION-SPECIFIC color scale
         valid_mask = np.isfinite(values)
 
         if not valid_mask.any():
-            img = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
+            img = Image.new('RGBA', (target_size, target_size), (0, 0, 0, 0))
         else:
             # NEW: Use region-specific scale if provided, otherwise use variable defaults
             if vmin is not None and vmax is not None:
@@ -200,7 +211,6 @@ async def get_weather_tile(
                 normalized = np.clip(normalized, 0, 1)
             
             # Create RGBA image
-            import matplotlib.cm as cm
             cmap = cm.get_cmap(cmap_name)
             rgba = (cmap(normalized) * 255).astype(np.uint8)
             
@@ -209,6 +219,11 @@ async def get_weather_tile(
             
             img = Image.fromarray(rgba, 'RGBA')
             logging.info(f"✅ Generated tile: {img.size}, region-specific colors")
+        
+        # ✅ Final verification before return
+        assert img.size == (target_size, target_size), f"Final image must be {target_size}x{target_size}, got {img.size}"
+        
+        logging.info(f"✅ Generated {target_size}x{target_size} tile with region-specific colors")
         
         # STEP 11: Return PNG
         buffer = io.BytesIO()
@@ -224,7 +239,7 @@ async def get_weather_tile(
                 'Cache-Control': 'public, max-age=86400',
                 'Access-Control-Allow-Origin': '*',
                 'X-Tile-Coords': f'{z}/{x}/{y}',
-                'X-Tile-Bounds': f'{bounds.north},{bounds.south},{bounds.west},{bounds.east}',
+                'X-Tile-Size': f'{target_size}x{target_size}',
                 'X-Color-Scale': f'{tile_vmin},{tile_vmax}' if vmin is not None else 'default'
             }
         )
@@ -232,8 +247,9 @@ async def get_weather_tile(
     except Exception as e:
         logging.error(f"❌ Tile error {z}/{x}/{y}: {str(e)}", exc_info=True)
         
-        # Return transparent tile on error
-        img = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
+        # Return 256x256 transparent tile on error
+        target_size = 256
+        img = Image.new('RGBA', (target_size, target_size), (0, 0, 0, 0))
         buffer = io.BytesIO()
         img.save(buffer, format='PNG')
         buffer.seek(0)
@@ -241,7 +257,10 @@ async def get_weather_tile(
         return Response(
             content=buffer.getvalue(),
             media_type='image/png',
-            headers={'X-Error': str(e)[:100]}
+            headers={
+                'X-Error': str(e)[:100],
+                'X-Tile-Size': f'{target_size}x{target_size}'
+            }
         )
 
 @router.get("/tiles/health")

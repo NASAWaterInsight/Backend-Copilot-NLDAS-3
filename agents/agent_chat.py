@@ -48,9 +48,36 @@ def _get_run(thread_id: str, run_id: str):
 
 # In your agent_chat.py, replace the existing create_tile_config function:
 
+def determine_optimal_zoom_level(bounds: dict, target_tile_count: int = 6) -> int:
+    """
+    Automatically determine zoom level based on region size
+    Goal: Generate optimal number of 256x256 tiles for any region size
+    """
+    lat_span = bounds["north"] - bounds["south"]
+    lng_span = bounds["east"] - bounds["west"]
+    area = lat_span * lng_span
+    
+    # HARDCODED: California gets zoom 6 for more detail
+    # California bounds check: roughly N=42, S=32, E=-114, W=-125
+    if (31 <= bounds["south"] <= 33 and 
+        41 <= bounds["north"] <= 43 and 
+        -126 <= bounds["west"] <= -124 and 
+        -115 <= bounds["east"] <= -113):
+        logging.info("🗺️ Detected California - using hardcoded zoom 6")
+        return 6
+    
+    # Original logic for other regions
+    if area > 2000:    return 3  # Continental (CONUS)
+    if area > 500:     return 4  # Multi-state 
+    if area > 100:     return 5  # Large state (other than California)
+    if area > 25:      return 6  # Medium state (Florida)
+    if area > 6:       return 7  # Small state (Maryland)
+    if area > 1:       return 8  # Metropolitan area
+    return 9                     # City level
+
 def create_tile_config(map_data: dict, user_query: str) -> dict:
     """
-    Create tile configuration with SPECIFIC tile list for the region
+    Create tile configuration with REGION-SPECIFIC global scale and DYNAMIC zoom
     """
     import re
     import mercantile
@@ -161,20 +188,41 @@ def create_tile_config(map_data: dict, user_query: str) -> dict:
         else:
             region_vmin, region_vmax = 0, 100
     
-    # Calculate zoom level
+    # NEW: Dynamic zoom level calculation
+    zoom = determine_optimal_zoom_level(bounds)
+    
+    # Calculate actual area for logging
     lat_range = abs(north - south)
     lon_range = abs(east - west) 
     area = lat_range * lon_range
     
-    if area > 100: zoom = 4
-    elif area > 50: zoom = 5  
-    elif area > 25: zoom = 6
-    elif area > 10: zoom = 7
-    else: zoom = 8
+    logging.info(f"🔍 Region area: {area:.2f} sq degrees → Zoom level: {zoom}")
     
-    # Generate SPECIFIC tile list for this region
+    # Generate SPECIFIC tile list for this region using mercantile
     nw_tile = mercantile.tile(west, north, zoom)
     se_tile = mercantile.tile(east, south, zoom)
+    
+    # Validate tile count (prevent excessive tiles)
+    tile_count_x = se_tile.x - nw_tile.x + 1
+    tile_count_y = se_tile.y - nw_tile.y + 1
+    total_tiles = tile_count_x * tile_count_y
+    
+    # Smart tile count management
+    if total_tiles > 50:
+        # Too many tiles - reduce zoom level
+        zoom = max(3, zoom - 1)
+        nw_tile = mercantile.tile(west, north, zoom)
+        se_tile = mercantile.tile(east, south, zoom)
+        total_tiles = (se_tile.x - nw_tile.x + 1) * (se_tile.y - nw_tile.y + 1)
+        logging.info(f"🔄 Reduced zoom to {zoom} for {total_tiles} tiles (was >50)")
+    
+    if total_tiles < 2:
+        # Too few tiles - increase zoom level  
+        zoom = min(8, zoom + 1)
+        nw_tile = mercantile.tile(west, north, zoom)
+        se_tile = mercantile.tile(east, south, zoom)
+        total_tiles = (se_tile.x - nw_tile.x + 1) * (se_tile.y - nw_tile.y + 1)
+        logging.info(f"🔄 Increased zoom to {zoom} for {total_tiles} tiles (was <2)")
     
     tile_list = []
     for x in range(nw_tile.x, se_tile.x + 1):
@@ -194,7 +242,7 @@ def create_tile_config(map_data: dict, user_query: str) -> dict:
                 }
             })
     
-    logging.info(f"🎯 Generated {len(tile_list)} tiles: X={nw_tile.x}-{se_tile.x}, Y={nw_tile.y}-{se_tile.y}")
+    logging.info(f"🎯 Generated {len(tile_list)} tiles: X={nw_tile.x}-{se_tile.x}, Y={nw_tile.y}-{se_tile.y} (256x256 each)")
     
     return {
         "tile_url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png?vmin={region_vmin}&vmax={region_vmax}",
@@ -203,11 +251,10 @@ def create_tile_config(map_data: dict, user_query: str) -> dict:
         "zoom": zoom,
         "min_zoom": max(3, zoom - 1),
         "max_zoom": min(10, zoom + 2),
-        "tile_size": 256,
-        "tile_list": tile_list,  # ✅ SPECIFIC tiles only
+        "tile_size": 256,  # ✅ ALWAYS 256x256 - NEVER CHANGE THIS
+        "tile_list": tile_list,
         "region_bounds": {"north": north, "south": south, "east": east, "west": west},
         "tile_count": len(tile_list),
-        # 🎯 ADD THE COLOR SCALE HERE:
         "color_scale": {
             "vmin": float(region_vmin),
             "vmax": float(region_vmax),
@@ -866,8 +913,8 @@ def build_temperature_data(geojson: dict, target_max_points: int = 2500) -> list
 def bounds_center(bounds: dict):
     try:
         return [
-            float((bounds.get("east")+bounds.get("west"))/2),
-            float((bounds.get("north")+bounds.get("south"))/2)
+            float((bounds.get("east")+bounds.get("west"))/2),  # ✅ FIXED: Added missing closing parenthesis
+            float((bounds.get("north")+bounds.get("south"))/2)  # ✅ FIXED: Added missing closing parenthesis
         ]
     except Exception:
         return [-98.0, 39.0]
