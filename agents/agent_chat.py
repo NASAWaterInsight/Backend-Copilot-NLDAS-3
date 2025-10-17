@@ -297,7 +297,7 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                 result_value = analysis_result.get("result", "No result")
 
                                 # UPDATED: Full map dict (dual URLs)
-                                if isinstance(result_value, dict) and ("geotiff_url" in result_value or "static_url" in result_value):
+                                if isinstance(result_value, dict) and ("overlay_url" in result_value or "static_url"):
                                     enriched = normalize_map_result_dict(result_value, user_query)
                                     enriched["temperature_data"] = build_temperature_data(enriched.get("geojson"))
                                     tool_outputs.append({
@@ -306,13 +306,13 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                     })
                                     return {
                                         "status": "success",
-                                        "content": enriched.get("static_url") or enriched["geotiff_url"],
-                                        "static_url": enriched["static_url"],
-                                        "geotiff_url": enriched["geotiff_url"],
+                                        "content": enriched.get("static_url") or enriched["overlay_url"],
+                                        "static_url": enriched.get("static_url"),
+                                        "overlay_url": enriched["overlay_url"],
                                         "geojson": enriched["geojson"],
                                         "bounds": enriched["bounds"],
                                         "map_config": enriched["map_config"],
-                                        "temperature_data": enriched["temperature_data"],
+                                        "temperature_data": enriched["temperature_data"],  # NEW
                                         "type": "visualization_with_overlay",
                                         "agent_id": text_agent_id,
                                         "thread_id": thread.id,
@@ -331,11 +331,11 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         "status": "success",
                                         "content": enriched["static_url"],
                                         "static_url": enriched["static_url"],
-                                        "geotiff_url": enriched["geotiff_url"],
+                                        "overlay_url": enriched["overlay_url"],
                                         "geojson": enriched["geojson"],
                                         "bounds": enriched.get("bounds"),
                                         "map_config": enriched["map_config"],
-                                        "temperature_data": enriched["temperature_data"],
+                                        "temperature_data": enriched["temperature_data"],  # NEW
                                         "type": "visualization_with_overlay",
                                         "agent_id": text_agent_id,
                                         "thread_id": thread.id,
@@ -514,7 +514,7 @@ def wrap_with_geo_overlay(static_url: str, original_query: str) -> dict:
     """
     Produce a unified response structure containing:
     - original static map URL (static_url)
-    - geotiff_url (same as static for now; future: transparent variant)
+    - overlay_url (same as static for now; future: transparent variant)
     - minimal GeoJSON sampling placeholder (empty FeatureCollection)
     - default map_config (frontend can refine)
     """
@@ -531,7 +531,7 @@ def wrap_with_geo_overlay(static_url: str, original_query: str) -> dict:
     }
     return {
         "static_url": static_url,
-        "geotiff_url": None,  # distinguish that we lack a transparent overlay
+        "overlay_url": None,  # distinguish that we lack a transparent overlay
         "geojson": geojson,
         "bounds": None,
         "map_config": map_config,
@@ -541,14 +541,34 @@ def wrap_with_geo_overlay(static_url: str, original_query: str) -> dict:
 def normalize_map_result_dict(raw: dict, original_query: str) -> dict:
     """Guarantee required keys for map dict returned by generated code."""
     static_url = raw.get("static_url")
-    geotiff_url = raw.get("geotiff_url") or raw.get("overlay_url")  # Accept both names
+    overlay_url = raw.get("overlay_url") or raw.get("transparent_url")
     # fallback: if only one provided treat as both
-    if geotiff_url is None and static_url:
-        geotiff_url = static_url
-    if static_url is None and geotiff_url:
-        static_url = geotiff_url
+    if overlay_url is None and static_url:
+        overlay_url = static_url
+    if static_url is None and overlay_url:
+        static_url = overlay_url
     geojson = raw.get("geojson") or {"type":"FeatureCollection","features":[]}
     bounds = raw.get("bounds") or {}
+    
+    # CRITICAL: Calculate bounds from GeoJSON if missing
+    if not bounds and geojson.get("features"):
+        lats = []
+        lngs = []
+        for feature in geojson["features"]:
+            coords = feature.get("geometry", {}).get("coordinates")
+            if coords and len(coords) >= 2:
+                lngs.append(float(coords[0]))
+                lats.append(float(coords[1]))
+        
+        if lats and lngs:
+            bounds = {
+                "north": max(lats),
+                "south": min(lats),
+                "east": max(lngs),
+                "west": min(lngs)
+            }
+            logging.info(f"🗺️ Calculated bounds from GeoJSON: {bounds}")
+    
     map_config = raw.get("map_config") or {
         "center": bounds_center(bounds),
         "zoom": 6,
@@ -562,7 +582,7 @@ def normalize_map_result_dict(raw: dict, original_query: str) -> dict:
         map_config["overlay_mode"] = True
     return {
         "static_url": static_url,
-        "geotiff_url": geotiff_url,
+        "overlay_url": overlay_url,
         "geojson": geojson,
         "bounds": bounds,
         "map_config": map_config,
