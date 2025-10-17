@@ -1,3 +1,5 @@
+# tiles_endpoint.py - FIXED VERSION with consistent color scales
+
 from fastapi import APIRouter, Response, HTTPException
 import mercantile
 import numpy as np
@@ -15,6 +17,44 @@ from agents.weather_tool import (
     ACCOUNT_NAME
 )
 
+# ✅ CRITICAL: Global color scale definitions (same for ALL tiles)
+VARIABLE_COLOR_SCALES = {
+    'Tair': {
+        'vmin': -40.0,  # Global minimum temperature (°C)
+        'vmax': 50.0,   # Global maximum temperature (°C)
+        'cmap': 'RdYlBu_r'
+    },
+    'Rainf': {
+        'vmin': 0.0,    # Minimum precipitation (mm)
+        'vmax': 100.0,  # Maximum precipitation (mm)
+        'cmap': 'Blues'
+    },
+    'SPI3': {
+        'vmin': -2.5,   # SPI minimum (extreme drought)
+        'vmax': 2.5,    # SPI maximum (extreme wet)
+        'cmap': 'RdBu'
+    },
+    'Qair': {
+        'vmin': 0.0,
+        'vmax': 0.03,
+        'cmap': 'BrBG'
+    },
+    'PSurf': {
+        'vmin': 80000,
+        'vmax': 105000,
+        'cmap': 'viridis'
+    }
+}
+
+def get_color_scale(variable: str):
+    """Get consistent color scale for a variable"""
+    if variable in VARIABLE_COLOR_SCALES:
+        return VARIABLE_COLOR_SCALES[variable]
+    else:
+        # Default fallback
+        logging.warning(f"⚠️ No color scale defined for {variable}, using default")
+        return {'vmin': 0, 'vmax': 100, 'cmap': 'viridis'}
+
 @router.get("/tiles/{variable}/{date}/{z}/{x}/{y}.png")
 @router.head("/tiles/{variable}/{date}/{z}/{x}/{y}.png")
 async def get_weather_tile(
@@ -22,15 +62,21 @@ async def get_weather_tile(
     date: str,
     z: int,
     x: int,
-    y: int
+    y: int,
+    vmin: float = None,  # NEW: Accept region-specific vmin
+    vmax: float = None   # NEW: Accept region-specific vmax
 ):
     """
-    Generate a 256x256 weather tile for Azure Maps
+    Generate a 256x256 weather tile with REGION-SPECIFIC color scale
     """
     try:
         logging.info(f"🗺️ Tile request: {variable}/{date}/{z}/{x}/{y}")
         
-        # STEP 1: Get tile bounds (Web Mercator XYZ → WGS84)
+        # ✅ Get GLOBAL color scale for this variable (same for all tiles!)
+        color_config = get_color_scale(variable)
+        cmap_name = color_config['cmap']
+        
+        # STEP 1: Get tile bounds
         tile = mercantile.Tile(x, y, z)
         bounds = mercantile.bounds(tile)
         
@@ -55,22 +101,14 @@ async def get_weather_tile(
         # STEP 3: Check coordinate order
         lat_coords = ds[lat_name].values
         lon_coords = ds[lon_name].values
-        
         lat_descending = lat_coords[0] > lat_coords[-1]
         
         logging.info(f"📊 Coordinates: lat={lat_coords.min():.2f} to {lat_coords.max():.2f} ({'DESC' if lat_descending else 'ASC'})")
-        logging.info(f"📊 Coordinates: lon={lon_coords.min():.2f} to {lon_coords.max():.2f}")
         
-        # STEP 4: Slice data correctly
-        # xarray.sel() with slice() requires: 
-        #   - For descending coords: slice(high, low)
-        #   - For ascending coords: slice(low, high)
-        
+        # STEP 4: Slice data
         if lat_descending:
-            # Latitude decreases → slice(north, south)
             lat_slice = slice(bounds.north, bounds.south)
         else:
-            # Latitude increases → slice(south, north)
             lat_slice = slice(bounds.south, bounds.north)
         
         lon_slice = slice(bounds.west, bounds.east)
@@ -81,7 +119,7 @@ async def get_weather_tile(
         
         logging.info(f"📊 Sliced data shape: {data.shape}")
         
-        # STEP 5: Process temporal dimension (for daily data)
+        # STEP 5: Process temporal dimension
         if variable != 'SPI3':
             if variable == 'Tair':
                 data = data.mean(dim='time') - 273.15  # Convert to Celsius
@@ -97,41 +135,36 @@ async def get_weather_tile(
         values = data.values
         
         logging.info(f"📊 Values shape: {values.shape}")
-
-
-        # ADD THIS CHECK BEFORE the value range logging:
+        
+        # STEP 7: Handle empty data
         if values.size == 0:
-            logging.warning(f"⚠️ Zero-size data array for tile {z}/{x}/{y} - returning transparent tile")
+            logging.warning(f"⚠️ Zero-size data array for tile {z}/{x}/{y}")
             img = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
             buffer = io.BytesIO()
             img.save(buffer, format='PNG', optimize=True)
             buffer.seek(0)
+            ds.close()
             return Response(content=buffer.getvalue(), media_type='image/png')
-
-        # NOW it's safe to log the range
-        logging.info(f"📊 Value range: {np.nanmin(values):.2f} to {np.nanmax(values):.2f}")
- 
         
-        # STEP 7: Handle empty tiles
-        if values.size == 0 or not np.isfinite(values).any():
-            logging.warning(f"⚠️ No valid data for tile {z}/{x}/{y}")
+        # Log actual data range (for debugging)
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size > 0:
+            actual_min = np.min(finite_values)
+            actual_max = np.max(finite_values)
+            logging.info(f"📊 Tile data range: {actual_min:.2f} to {actual_max:.2f}")
+        else:
+            logging.warning(f"⚠️ No finite values in tile {z}/{x}/{y}")
             img = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
             buffer = io.BytesIO()
             img.save(buffer, format='PNG', optimize=True)
             buffer.seek(0)
+            ds.close()
             return Response(content=buffer.getvalue(), media_type='image/png')
         
-        # STEP 8: CRITICAL FIX - Ensure correct orientation
-        # After slicing:
-        # - If lat is descending: data[0] = north, data[-1] = south ✓ (correct for image)
-        # - If lat is ascending: data[0] = south, data[-1] = north ✗ (need to flip)
-        
+        # STEP 8: Fix orientation
         if not lat_descending:
-            # For ascending coordinates, flip to get north at top
             logging.info("🔄 Flipping data (lat ascending → north at top)")
             values = np.flipud(values)
-        else:
-            logging.info("✅ No flip needed (lat already north-to-south)")
         
         # STEP 9: Resample to 256x256
         if values.shape != (256, 256):
@@ -139,34 +172,32 @@ async def get_weather_tile(
             zoom_y = target_height / values.shape[0]
             zoom_x = target_width / values.shape[1]
             
-            logging.info(f"📏 Resampling from {values.shape} to (256, 256) with zoom=({zoom_y:.2f}, {zoom_x:.2f})")
-            
+            logging.info(f"📏 Resampling from {values.shape} to (256, 256)")
             values = zoom(values, (zoom_y, zoom_x), order=1, mode='nearest')
-            
-            logging.info(f"📏 Resampled shape: {values.shape}")
         
-        # STEP 10: Apply colormap
+        # ✅ STEP 10: Apply REGION-SPECIFIC color scale
         valid_mask = np.isfinite(values)
-        
+
         if not valid_mask.any():
             img = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
         else:
-            # Normalize values
-            if variable == 'SPI3':
-                # SPI: -2.5 to +2.5 scale
-                vmin, vmax = -2.5, 2.5
-                normalized = np.clip((values - vmin) / (vmax - vmin), 0, 1)
-                cmap_name = 'RdBu'
+            # NEW: Use region-specific scale if provided, otherwise use variable defaults
+            if vmin is not None and vmax is not None:
+                # Use the region-specific scale passed from backend
+                tile_vmin, tile_vmax = float(vmin), float(vmax)
+                logging.info(f"🎨 Using REGION-SPECIFIC scale: [{tile_vmin:.2f}, {tile_vmax:.2f}]")
             else:
-                vmin, vmax = np.nanpercentile(values[valid_mask], [2, 98])
-                if vmax == vmin:
-                    normalized = np.ones_like(values) * 0.5
-                else:
-                    normalized = np.clip((values - vmin) / (vmax - vmin), 0, 1)
-                
-                cmap_name = 'RdYlBu_r' if variable == 'Tair' else 'Blues'
+                # Fallback to variable-specific defaults
+                tile_vmin = color_config['vmin']
+                tile_vmax = color_config['vmax']
+                logging.info(f"🎨 Using DEFAULT scale: [{tile_vmin:.2f}, {tile_vmax:.2f}]")
             
-            logging.info(f"🎨 Colormap: {cmap_name}, range: [{vmin:.2f}, {vmax:.2f}]")
+            # Normalize using region-specific scale
+            if tile_vmax == tile_vmin:
+                normalized = np.ones_like(values) * 0.5
+            else:
+                normalized = (values - tile_vmin) / (tile_vmax - tile_vmin)
+                normalized = np.clip(normalized, 0, 1)
             
             # Create RGBA image
             import matplotlib.cm as cm
@@ -177,7 +208,7 @@ async def get_weather_tile(
             rgba[~valid_mask, 3] = 0
             
             img = Image.fromarray(rgba, 'RGBA')
-            logging.info(f"✅ Generated tile image: {img.size}, mode: {img.mode}")
+            logging.info(f"✅ Generated tile: {img.size}, region-specific colors")
         
         # STEP 11: Return PNG
         buffer = io.BytesIO()
@@ -193,7 +224,8 @@ async def get_weather_tile(
                 'Cache-Control': 'public, max-age=86400',
                 'Access-Control-Allow-Origin': '*',
                 'X-Tile-Coords': f'{z}/{x}/{y}',
-                'X-Tile-Bounds': f'{bounds.north},{bounds.south},{bounds.west},{bounds.east}'
+                'X-Tile-Bounds': f'{bounds.north},{bounds.south},{bounds.west},{bounds.east}',
+                'X-Color-Scale': f'{tile_vmin},{tile_vmax}' if vmin is not None else 'default'
             }
         )
         
@@ -211,3 +243,13 @@ async def get_weather_tile(
             media_type='image/png',
             headers={'X-Error': str(e)[:100]}
         )
+
+@router.get("/tiles/health")
+async def tiles_health():
+    """Health check for tiles endpoint"""
+    return {"status": "healthy", "service": "weather-tiles"}
+
+@router.get("/tiles/colorscales")
+async def get_color_scales():
+    """Return the global color scales for all variables"""
+    return VARIABLE_COLOR_SCALES

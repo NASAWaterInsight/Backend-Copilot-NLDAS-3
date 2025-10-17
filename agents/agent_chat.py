@@ -6,6 +6,8 @@ import json
 import logging
 import time
 from .dynamic_code_generator import execute_custom_code
+import numpy as np
+import builtins
 
 # Load agent info (keep existing code)
 agent_info_path = os.path.join(os.path.dirname(__file__), "../agent_info.json")
@@ -85,6 +87,79 @@ def create_tile_config(map_data: dict, user_query: str) -> dict:
     west = float(bounds.get("west"))
     
     logging.info(f"🗺️ Creating tiles for: N={north:.2f}, S={south:.2f}, W={west:.2f}, E={east:.2f}")
+
+    # NEW: Calculate actual data range for this region
+    try:
+        from .weather_tool import (
+            load_specific_date_kerchunk,
+            load_specific_month_spi_kerchunk,
+            get_account_key,
+            ACCOUNT_NAME
+        )
+        
+        account_key = get_account_key()
+        
+        if variable == 'SPI3':
+            ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
+            data = ds[variable].sel(
+                latitude=builtins.slice(south, north),
+                longitude=builtins.slice(west, east)
+            )
+            # SPI has standardized range
+            region_vmin, region_vmax = -2.5, 2.5
+        else:
+            ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
+            data = ds[variable].sel(
+                lat=builtins.slice(south, north),
+                lon=builtins.slice(west, east)
+            )
+            
+            # Process the data the same way tiles will
+            if variable == 'Tair':
+                data = data.mean(dim='time') - 273.15  # Convert to Celsius
+            elif variable == 'Rainf':
+                data = data.sum(dim='time')
+            else:
+                data = data.mean(dim='time')
+            
+            # Calculate actual min/max for this region
+            if hasattr(data, 'squeeze'):
+                data = data.squeeze()
+            
+            valid_data = data.values[np.isfinite(data.values)]
+            if len(valid_data) > 0:
+                # Use 2nd and 98th percentiles for better contrast
+                region_vmin, region_vmax = np.percentile(valid_data, [2, 98])
+                
+                # Add small buffer if range is too small
+                if abs(region_vmax - region_vmin) < 0.1:
+                    center = (region_vmin + region_vmax) / 2
+                    region_vmin = center - 1.0
+                    region_vmax = center + 1.0
+            else:
+                # Fallback to reasonable defaults
+                if variable == 'Tair':
+                    region_vmin, region_vmax = -10, 30
+                elif variable == 'Rainf':
+                    region_vmin, region_vmax = 0, 50
+                else:
+                    region_vmin, region_vmax = 0, 100
+        
+        ds.close()
+        
+        logging.info(f"🎨 Region-specific scale: {region_vmin:.2f} to {region_vmax:.2f}")
+        
+    except Exception as scale_error:
+        logging.error(f"❌ Failed to calculate region scale: {scale_error}")
+        # Fallback to reasonable defaults
+        if variable == 'SPI3':
+            region_vmin, region_vmax = -2.5, 2.5
+        elif variable == 'Tair':
+            region_vmin, region_vmax = -10, 30
+        elif variable == 'Rainf':
+            region_vmin, region_vmax = 0, 50
+        else:
+            region_vmin, region_vmax = 0, 100
     
     # Calculate zoom level
     lat_range = abs(north - south)
@@ -110,7 +185,7 @@ def create_tile_config(map_data: dict, user_query: str) -> dict:
                 "z": zoom,
                 "x": x,
                 "y": y,
-                "url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{zoom}/{x}/{y}.png",
+                "url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{zoom}/{x}/{y}.png?vmin={region_vmin}&vmax={region_vmax}",
                 "bounds": {
                     "north": tile_bounds.north,
                     "south": tile_bounds.south,
@@ -122,7 +197,7 @@ def create_tile_config(map_data: dict, user_query: str) -> dict:
     logging.info(f"🎯 Generated {len(tile_list)} tiles: X={nw_tile.x}-{se_tile.x}, Y={nw_tile.y}-{se_tile.y}")
     
     return {
-        "tile_url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png",
+        "tile_url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png?vmin={region_vmin}&vmax={region_vmax}",
         "variable": variable,
         "date": date_str,
         "zoom": zoom,
@@ -131,7 +206,13 @@ def create_tile_config(map_data: dict, user_query: str) -> dict:
         "tile_size": 256,
         "tile_list": tile_list,  # ✅ SPECIFIC tiles only
         "region_bounds": {"north": north, "south": south, "east": east, "west": west},
-        "tile_count": len(tile_list)
+        "tile_count": len(tile_list),
+        # 🎯 ADD THE COLOR SCALE HERE:
+        "color_scale": {
+            "vmin": float(region_vmin),
+            "vmax": float(region_vmax),
+            "variable": variable
+        }
     }
 
 def handle_chat_request(data):
@@ -397,6 +478,13 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                     if use_tiles:
                                         # Return tile configuration
                                         tile_config = create_tile_config(enriched, user_query)
+                                        # DEBUG: Log what we're returning
+                                        logging.info(f"🎯 Tile config generated: {tile_config}")
+                                        logging.info(f"🎯 Tile list length: {len(tile_config.get('tile_list', []))}")
+                                        
+                                        # Make sure the tile_list exists
+                                        if not tile_config.get('tile_list'):
+                                            logging.warning("⚠️ No tile_list in tile_config - frontend will generate random tiles!")
                                         tool_outputs.append({
                                             "tool_call_id": tool_call.id,
                                             "output": json.dumps({"status": "success", "completed": True})
@@ -790,6 +878,7 @@ def should_use_tiles(user_query: str, map_data: dict) -> bool:
     """
     bounds = map_data.get("bounds", {})
     if not bounds:
+        logging.warning("❌ No bounds in map_data - cannot use tiles")
         return False
     
     try:
@@ -797,21 +886,24 @@ def should_use_tiles(user_query: str, map_data: dict) -> bool:
         lon_range = abs(bounds.get("east", 0) - bounds.get("west", 0))
         area = lat_range * lon_range
         
-        logging.info(f"🗺️ Map area: {area:.2f} sq degrees")
+        logging.info(f"🗺️ should_use_tiles DEBUG:")
+        logging.info(f"   Query: '{user_query}'")
+        logging.info(f"   Bounds: N={bounds.get('north')}, S={bounds.get('south')}, E={bounds.get('east')}, W={bounds.get('west')}")
+        logging.info(f"   Area: {area:.2f} sq degrees (lat_range={lat_range:.2f}, lon_range={lon_range:.2f})")
         
-        # Use tiles if area is large (> 25 sq degrees)
-        if area > 25:
+        # FIXED: Lower threshold for Florida (Florida is ~6.5 * 7.6 = ~49 sq degrees)
+        if area > 15:  # Lowered from 25 to 15
             logging.info("✅ Using tiles due to large area")
+            return True
+        
+        # Use tiles for state-level queries
+        if any(word in user_query.lower() for word in ['florida', 'california', 'texas', 'alaska', 'united states', 'usa']):
+            logging.info("✅ Using tiles due to state/region query")
             return True
         
         # Use tiles if explicitly requested
         if any(word in user_query.lower() for word in ['interactive', 'zoom', 'pan', 'large', 'entire', 'whole']):
             logging.info("✅ Using tiles due to interactive request")
-            return True
-        
-        # Use tiles for state-level queries
-        if any(word in user_query.lower() for word in ['california', 'florida', 'texas', 'alaska', 'united states', 'usa']):
-            logging.info("✅ Using tiles due to large region")
             return True
         
         logging.info("📸 Using PNG overlay for small area")
