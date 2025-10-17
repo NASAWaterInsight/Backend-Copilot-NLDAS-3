@@ -764,13 +764,13 @@ def create_tile_config(map_data: dict, user_query: str) -> dict:
     
     tile_url_template = f"{api_base}/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png"
     
-    logging.info(f"🎯 Created tile config: {tile_url_template}")
-    
     return {
         "tile_url": tile_url_template,
         "variable": variable,
         "date": date_str,
         "min_zoom": 3,
         "max_zoom": 10,
-        "tile_size": 256
+        "tile_size": 256,
+        # NEW: Add bounds calculation endpoint
+        "bounds_endpoint": f"{api_base}/tiles/{variable}/{date_str}/bounds/{{z}}/{{x}}/{{y}}"
     }

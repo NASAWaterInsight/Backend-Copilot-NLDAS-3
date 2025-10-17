@@ -1,0 +1,46 @@
+
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Tile Viewer: Tair - 2023-01-15</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .tile-grid { display: grid; grid-template-columns: repeat(2, 256px); gap: 2px; }
+            .tile { border: 1px solid #ccc; position: relative; }
+            .tile img { width: 256px; height: 256px; }
+            .tile-info { position: absolute; top: 5px; left: 5px; background: rgba(0,0,0,0.7); color: white; padding: 2px 5px; font-size: 12px; }
+            .header { text-align: center; margin-bottom: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>Tair Tiles - 2023-01-15</h1>
+            <p>Zoom Level: 6 | Tiles: X=16-17, Y=26-27</p>
+        </div>
+        
+        <div class="tile-grid">
+    
+            <div class="tile">
+                <img src="http://localhost:8000/api/tiles/Tair/2023-01-15/6/16/26.png" alt="Tile 6/16/26" onerror="this.style.background='#ffeeee';">
+                <div class="tile-info">6/16/26</div>
+            </div>
+            
+            <div class="tile">
+                <img src="http://localhost:8000/api/tiles/Tair/2023-01-15/6/17/26.png" alt="Tile 6/17/26" onerror="this.style.background='#ffeeee';">
+                <div class="tile-info">6/17/26</div>
+            </div>
+            
+            <div class="tile">
+                <img src="http://localhost:8000/api/tiles/Tair/2023-01-15/6/16/27.png" alt="Tile 6/16/27" onerror="this.style.background='#ffeeee';">
+                <div class="tile-info">6/16/27</div>
+            </div>
+            
+            <div class="tile">
+                <img src="http://localhost:8000/api/tiles/Tair/2023-01-15/6/17/27.png" alt="Tile 6/17/27" onerror="this.style.background='#ffeeee';">
+                <div class="tile-info">6/17/27</div>
+            </div>
+            
+        </div>
+    </body>
+    </html>
+    
