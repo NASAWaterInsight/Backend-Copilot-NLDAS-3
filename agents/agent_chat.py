@@ -44,6 +44,96 @@ def _get_run(thread_id: str, run_id: str):
         return runs_ops.retrieve_run(thread_id=thread_id, run_id=run_id)
     raise AttributeError("RunsOperations has no get/get_run/retrieve_run")
 
+# In your agent_chat.py, replace the existing create_tile_config function:
+
+def create_tile_config(map_data: dict, user_query: str) -> dict:
+    """
+    Create tile configuration with SPECIFIC tile list for the region
+    """
+    import re
+    import mercantile
+    
+    # Extract date and variable (existing code)
+    year_match = re.search(r'(20\d{2})', user_query)
+    year = int(year_match.group(1)) if year_match else 2023
+    
+    month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_query.lower())
+    month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
+    month = month_names.index(month_match.group(1)) + 1 if month_match else 5
+    
+    day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', user_query)
+    day = int(day_match.group(1)) if day_match and 1 <= int(day_match.group(1)) <= 31 else 12
+    
+    variable = 'Tair'  # Default
+    if any(word in user_query.lower() for word in ['precipitation', 'rain', 'rainfall']):
+        variable = 'Rainf'
+    elif any(word in user_query.lower() for word in ['drought', 'spi']):
+        variable = 'SPI3'
+        date_str = f"{year}-{month:02d}"  # SPI is monthly
+    else:
+        date_str = f"{year}-{month:02d}-{day:02d}"
+    
+    # CRITICAL: Get the actual bounds from your map data
+    bounds = map_data.get("bounds", {})
+    if not bounds:
+        logging.error("❌ No bounds provided in map_data")
+        return {"error": "No geographic bounds available"}
+    
+    north = float(bounds.get("north"))
+    south = float(bounds.get("south"))
+    east = float(bounds.get("east"))
+    west = float(bounds.get("west"))
+    
+    logging.info(f"🗺️ Creating tiles for: N={north:.2f}, S={south:.2f}, W={west:.2f}, E={east:.2f}")
+    
+    # Calculate zoom level
+    lat_range = abs(north - south)
+    lon_range = abs(east - west) 
+    area = lat_range * lon_range
+    
+    if area > 100: zoom = 4
+    elif area > 50: zoom = 5  
+    elif area > 25: zoom = 6
+    elif area > 10: zoom = 7
+    else: zoom = 8
+    
+    # Generate SPECIFIC tile list for this region
+    nw_tile = mercantile.tile(west, north, zoom)
+    se_tile = mercantile.tile(east, south, zoom)
+    
+    tile_list = []
+    for x in range(nw_tile.x, se_tile.x + 1):
+        for y in range(nw_tile.y, se_tile.y + 1):
+            tile_bounds = mercantile.bounds(mercantile.Tile(x, y, zoom))
+            
+            tile_list.append({
+                "z": zoom,
+                "x": x,
+                "y": y,
+                "url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{zoom}/{x}/{y}.png",
+                "bounds": {
+                    "north": tile_bounds.north,
+                    "south": tile_bounds.south,
+                    "east": tile_bounds.east,
+                    "west": tile_bounds.west
+                }
+            })
+    
+    logging.info(f"🎯 Generated {len(tile_list)} tiles: X={nw_tile.x}-{se_tile.x}, Y={nw_tile.y}-{se_tile.y}")
+    
+    return {
+        "tile_url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png",
+        "variable": variable,
+        "date": date_str,
+        "zoom": zoom,
+        "min_zoom": max(3, zoom - 1),
+        "max_zoom": min(10, zoom + 2),
+        "tile_size": 256,
+        "tile_list": tile_list,  # ✅ SPECIFIC tiles only
+        "region_bounds": {"north": north, "south": south, "east": east, "west": west},
+        "tile_count": len(tile_list)
+    }
+
 def handle_chat_request(data):
     """
     ULTRA-DIRECT: Immediate function execution with Azure Maps detection
@@ -731,46 +821,3 @@ def should_use_tiles(user_query: str, map_data: dict) -> bool:
         logging.error(f"❌ Error calculating tile decision: {e}")
         return False
 
-def create_tile_config(map_data: dict, user_query: str) -> dict:
-    """
-    Create tile configuration for frontend
-    """
-    import re
-    
-    # Extract date from query or use current
-    year_match = re.search(r'(20\d{2})', user_query)
-    year = int(year_match.group(1)) if year_match else 2023
-    
-    month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_query.lower())
-    month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
-    month = month_names.index(month_match.group(1)) + 1 if month_match else 5
-    
-    # Try to extract day
-    day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', user_query)
-    day = int(day_match.group(1)) if day_match and 1 <= int(day_match.group(1)) <= 31 else 12
-    
-    # Detect variable
-    variable = 'Tair'  # Default
-    if any(word in user_query.lower() for word in ['precipitation', 'rain', 'rainfall']):
-        variable = 'Rainf'
-    elif any(word in user_query.lower() for word in ['drought', 'spi']):
-        variable = 'SPI3'
-        date_str = f"{year}-{month:02d}"  # SPI is monthly
-    else:
-        date_str = f"{year}-{month:02d}-{day:02d}"
-    
-    # API base URL - UPDATE THIS TO YOUR FASTAPI SERVER
-    api_base = "http://localhost:8000/api"
-    
-    tile_url_template = f"{api_base}/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png"
-    
-    return {
-        "tile_url": tile_url_template,
-        "variable": variable,
-        "date": date_str,
-        "min_zoom": 3,
-        "max_zoom": 10,
-        "tile_size": 256,
-        # NEW: Add bounds calculation endpoint
-        "bounds_endpoint": f"{api_base}/tiles/{variable}/{date_str}/bounds/{{z}}/{{x}}/{{y}}"
-    }

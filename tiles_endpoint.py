@@ -16,6 +16,7 @@ from agents.weather_tool import (
 )
 
 @router.get("/tiles/{variable}/{date}/{z}/{x}/{y}.png")
+@router.head("/tiles/{variable}/{date}/{z}/{x}/{y}.png")
 async def get_weather_tile(
     variable: str,
     date: str,
@@ -96,7 +97,20 @@ async def get_weather_tile(
         values = data.values
         
         logging.info(f"📊 Values shape: {values.shape}")
+
+
+        # ADD THIS CHECK BEFORE the value range logging:
+        if values.size == 0:
+            logging.warning(f"⚠️ Zero-size data array for tile {z}/{x}/{y} - returning transparent tile")
+            img = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
+            buffer = io.BytesIO()
+            img.save(buffer, format='PNG', optimize=True)
+            buffer.seek(0)
+            return Response(content=buffer.getvalue(), media_type='image/png')
+
+        # NOW it's safe to log the range
         logging.info(f"📊 Value range: {np.nanmin(values):.2f} to {np.nanmax(values):.2f}")
+ 
         
         # STEP 7: Handle empty tiles
         if values.size == 0 or not np.isfinite(values).any():
