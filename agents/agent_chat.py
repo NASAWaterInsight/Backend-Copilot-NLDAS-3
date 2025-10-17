@@ -296,28 +296,56 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                             if analysis_result.get("status") == "success":
                                 result_value = analysis_result.get("result", "No result")
 
-                                # UPDATED: Full map dict (dual URLs)
-                                if isinstance(result_value, dict) and ("overlay_url" in result_value or "static_url"):
+                                # UPDATED: Check for map results and decide between tiles vs PNG
+                                if isinstance(result_value, dict) and ("overlay_url" in result_value or "static_url" in result_value):
                                     enriched = normalize_map_result_dict(result_value, user_query)
                                     enriched["temperature_data"] = build_temperature_data(enriched.get("geojson"))
-                                    tool_outputs.append({
-                                        "tool_call_id": tool_call.id,
-                                        "output": json.dumps({"status": "success", "completed": True})
-                                    })
-                                    return {
-                                        "status": "success",
-                                        "content": enriched.get("static_url") or enriched["overlay_url"],
-                                        "static_url": enriched.get("static_url"),
-                                        "overlay_url": enriched["overlay_url"],
-                                        "geojson": enriched["geojson"],
-                                        "bounds": enriched["bounds"],
-                                        "map_config": enriched["map_config"],
-                                        "temperature_data": enriched["temperature_data"],  # NEW
-                                        "type": "visualization_with_overlay",
-                                        "agent_id": text_agent_id,
-                                        "thread_id": thread.id,
-                                        "analysis_data": analysis_result
-                                    }
+                                    
+                                    # NEW: Decide between tiles and PNG overlay
+                                    use_tiles = should_use_tiles(user_query, enriched)
+                                    
+                                    if use_tiles:
+                                        # Return tile configuration
+                                        tile_config = create_tile_config(enriched, user_query)
+                                        tool_outputs.append({
+                                            "tool_call_id": tool_call.id,
+                                            "output": json.dumps({"status": "success", "completed": True})
+                                        })
+                                        return {
+                                            "status": "success",
+                                            "content": enriched.get("static_url") or "Interactive map generated",
+                                            "use_tiles": True,  # ✅ Signal to frontend
+                                            "tile_config": tile_config,  # ✅ Tile endpoint info
+                                            "static_url": enriched.get("static_url"),
+                                            "geojson": enriched["geojson"],
+                                            "bounds": enriched["bounds"],
+                                            "map_config": enriched["map_config"],
+                                            "temperature_data": enriched["temperature_data"],
+                                            "type": "visualization_with_tiles",
+                                            "agent_id": text_agent_id,
+                                            "thread_id": thread.id,
+                                            "analysis_data": analysis_result
+                                        }
+                                    else:
+                                        # Use existing PNG overlay approach
+                                        tool_outputs.append({
+                                            "tool_call_id": tool_call.id,
+                                            "output": json.dumps({"status": "success", "completed": True})
+                                        })
+                                        return {
+                                            "status": "success",
+                                            "content": enriched.get("static_url") or enriched["overlay_url"],
+                                            "static_url": enriched.get("static_url"),
+                                            "overlay_url": enriched["overlay_url"],
+                                            "geojson": enriched["geojson"],
+                                            "bounds": enriched["bounds"],
+                                            "map_config": enriched["map_config"],
+                                            "temperature_data": enriched["temperature_data"],
+                                            "type": "visualization_with_overlay",
+                                            "agent_id": text_agent_id,
+                                            "thread_id": thread.id,
+                                            "analysis_data": analysis_result
+                                        }
 
                                 # Legacy single URL path
                                 if isinstance(result_value, str) and result_value.startswith("http"):
@@ -665,3 +693,84 @@ def bounds_center(bounds: dict):
         ]
     except Exception:
         return [-98.0, 39.0]
+
+def should_use_tiles(user_query: str, map_data: dict) -> bool:
+    """
+    Decide if we should use tiles based on query and data
+    """
+    bounds = map_data.get("bounds", {})
+    if not bounds:
+        return False
+    
+    try:
+        lat_range = abs(bounds.get("north", 0) - bounds.get("south", 0))
+        lon_range = abs(bounds.get("east", 0) - bounds.get("west", 0))
+        area = lat_range * lon_range
+        
+        logging.info(f"🗺️ Map area: {area:.2f} sq degrees")
+        
+        # Use tiles if area is large (> 25 sq degrees)
+        if area > 25:
+            logging.info("✅ Using tiles due to large area")
+            return True
+        
+        # Use tiles if explicitly requested
+        if any(word in user_query.lower() for word in ['interactive', 'zoom', 'pan', 'large', 'entire', 'whole']):
+            logging.info("✅ Using tiles due to interactive request")
+            return True
+        
+        # Use tiles for state-level queries
+        if any(word in user_query.lower() for word in ['california', 'florida', 'texas', 'alaska', 'united states', 'usa']):
+            logging.info("✅ Using tiles due to large region")
+            return True
+        
+        logging.info("📸 Using PNG overlay for small area")
+        return False
+        
+    except Exception as e:
+        logging.error(f"❌ Error calculating tile decision: {e}")
+        return False
+
+def create_tile_config(map_data: dict, user_query: str) -> dict:
+    """
+    Create tile configuration for frontend
+    """
+    import re
+    
+    # Extract date from query or use current
+    year_match = re.search(r'(20\d{2})', user_query)
+    year = int(year_match.group(1)) if year_match else 2023
+    
+    month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_query.lower())
+    month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
+    month = month_names.index(month_match.group(1)) + 1 if month_match else 5
+    
+    # Try to extract day
+    day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', user_query)
+    day = int(day_match.group(1)) if day_match and 1 <= int(day_match.group(1)) <= 31 else 12
+    
+    # Detect variable
+    variable = 'Tair'  # Default
+    if any(word in user_query.lower() for word in ['precipitation', 'rain', 'rainfall']):
+        variable = 'Rainf'
+    elif any(word in user_query.lower() for word in ['drought', 'spi']):
+        variable = 'SPI3'
+        date_str = f"{year}-{month:02d}"  # SPI is monthly
+    else:
+        date_str = f"{year}-{month:02d}-{day:02d}"
+    
+    # API base URL - UPDATE THIS TO YOUR FASTAPI SERVER
+    api_base = "http://localhost:8000/api"
+    
+    tile_url_template = f"{api_base}/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png"
+    
+    logging.info(f"🎯 Created tile config: {tile_url_template}")
+    
+    return {
+        "tile_url": tile_url_template,
+        "variable": variable,
+        "date": date_str,
+        "min_zoom": 3,
+        "max_zoom": 10,
+        "tile_size": 256
+    }
