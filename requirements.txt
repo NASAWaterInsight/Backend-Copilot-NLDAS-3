@@ -14,3 +14,11 @@ cartopy
 shapely
 pyproj
 requests
+# Missing packages that your code needs:
+fastapi
+uvicorn
+mercantile
+numpy
+scipy
+scikit-image
+mem0ai
