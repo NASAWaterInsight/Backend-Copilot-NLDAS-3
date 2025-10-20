@@ -301,8 +301,22 @@ def handle_chat_request(data):
         # ULTRA-DIRECT: Force immediate function call
         enhanced_query = f"""IMMEDIATE ACTION REQUIRED: {user_query}
 
-You MUST call execute_custom_code function RIGHT NOW. No thinking, no explanations.
+🚨 CRITICAL: For ALL GeoJSON features, ALWAYS use "value" property:
+- WRONG: {{"properties": {{"spi": -1.5}}}}
+- RIGHT: {{"properties": {{"value": -1.5, "variable": "SPI3"}}}}
 
+For SPI data specifically:
+```python
+# When creating GeoJSON for SPI, always use "value":
+feature = {{
+    "type": "Feature", 
+    "geometry": {{"type": "Point", "coordinates": [lon, lat]}},
+    "properties": {{
+        "value": spi_value,  # ✅ Use "value", never "spi"
+        "variable": "SPI3",
+        "unit": "SPI"
+    }}
+}}
 Example for ANY request:
 {{
   "python_code": "import builtins\\nds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)\\ndata = ds['Tair'].sel(lat=builtins.slice(58, 72), lon=builtins.slice(-180, -120)).mean()\\ntemp_c = float(data.values) - 273.15\\nds.close()\\nresult = f'Alaska temperature: {{temp_c:.1f}}°C'",
@@ -945,42 +959,12 @@ def bounds_center(bounds: dict):
 
 def should_use_tiles(user_query: str, map_data: dict) -> bool:
     """
-    Decide if we should use tiles based on query and data
+    ALWAYS use tiles - unified approach for all map queries
     """
     bounds = map_data.get("bounds", {})
     if not bounds:
         logging.warning("❌ No bounds in map_data - cannot use tiles")
         return False
     
-    try:
-        lat_range = abs(bounds.get("north", 0) - bounds.get("south", 0))
-        lon_range = abs(bounds.get("east", 0) - bounds.get("west", 0))
-        area = lat_range * lon_range
-        
-        logging.info(f"🗺️ should_use_tiles DEBUG:")
-        logging.info(f"   Query: '{user_query}'")
-        logging.info(f"   Bounds: N={bounds.get('north')}, S={bounds.get('south')}, E={bounds.get('east')}, W={bounds.get('west')}")
-        logging.info(f"   Area: {area:.2f} sq degrees (lat_range={lat_range:.2f}, lon_range={lon_range:.2f})")
-        
-        # FIXED: Lower threshold for Florida (Florida is ~6.5 * 7.6 = ~49 sq degrees)
-        if area > 15:  # Lowered from 25 to 15
-            logging.info("✅ Using tiles due to large area")
-            return True
-        
-        # Use tiles for state-level queries
-        if any(word in user_query.lower() for word in ['florida', 'california', 'texas', 'alaska', 'united states', 'usa']):
-            logging.info("✅ Using tiles due to state/region query")
-            return True
-        
-        # Use tiles if explicitly requested
-        if any(word in user_query.lower() for word in ['interactive', 'zoom', 'pan', 'large', 'entire', 'whole']):
-            logging.info("✅ Using tiles due to interactive request")
-            return True
-        
-        logging.info("📸 Using PNG overlay for small area")
-        return False
-        
-    except Exception as e:
-        logging.error(f"❌ Error calculating tile decision: {e}")
-        return False
-
+    logging.info("✅ Using tiles for ALL map queries (unified approach)")
+    return True  # Always return True
