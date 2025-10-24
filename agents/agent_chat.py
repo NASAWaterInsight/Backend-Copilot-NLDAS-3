@@ -8,6 +8,7 @@ import time
 from .dynamic_code_generator import execute_custom_code
 import numpy as np
 import builtins
+from .query_validator import query_validator
 
 # Load agent info (keep existing code)
 agent_info_path = os.path.join(os.path.dirname(__file__), "../agent_info.json")
@@ -294,13 +295,32 @@ def handle_chat_request(data):
         user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
         logging.info(f"Processing chat request: {user_query}")
 
+        # ===== NEW: SMART QUERY VALIDATION =====
+        validation = query_validator.validate_query(user_query)
+        
+        # If it's a data query but missing parameters, return immediately
+        if validation['is_data_query'] and not validation['is_valid']:
+            logging.info(f"🔍 Data query missing parameters: {validation['missing_params']}")
+            return {
+                "status": "success",
+                "content": validation['message'],
+                "type": "validation_error",
+                "validation": validation
+            }
+        
+        # Log what we're doing
+        if validation['is_data_query']:
+            logging.info(f"✅ Valid data query - Params: {validation['extracted_params']}")
+        else:
+            logging.info(f"💬 General conversation - passing to agent")
+        # ===== END NEW CODE =====
+
         # Create a thread for the conversation
         thread = project_client.agents.threads.create()
         logging.info(f"Created thread: {thread.id}")
         
         # ULTRA-DIRECT: Force immediate function call
         enhanced_query = f"""IMMEDIATE ACTION REQUIRED: {user_query}
-
 🚨 CRITICAL: For ALL GeoJSON features, ALWAYS use "value" property:
 - WRONG: {{"properties": {{"spi": -1.5}}}}
 - RIGHT: {{"properties": {{"value": -1.5, "variable": "SPI3"}}}}

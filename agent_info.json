@@ -2,7 +2,7 @@
   "project_endpoint": "https://nldas-test-resource.services.ai.azure.com/api/projects/nldas-test",
   "agents": {
     "text": {
-      "id": "asst_WoUtHGyMJrOoRMaBpMjuE1Be",
+      "id": "asst_u8UID07txLqFjJEHXw4QXwnp",
       "name": "nldas3-final-agent-with-formatted-timeseries",
       "model": "gpt-4o",
       "capabilities": [
@@ -27,7 +27,7 @@
       ]
     },
     "visualization": {
-      "id": "asst_jXn2RlYj4tQeV4Wnc2Y3v92u",
+      "id": "asst_nvQoQxXLEqhasObRB8Pb3rIr",
       "name": "nldas3-visualization-agent",
       "model": "gpt-4o",
       "capabilities": [
