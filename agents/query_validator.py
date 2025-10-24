@@ -1,159 +1,145 @@
-# agents/query_validator.py - Minimal validator with proper attributes
+# agents/query_validator.py - MINIMAL VERSION
+# Let the AGENT be smart - validator only does basic filtering
+
 import logging
 import re
 from typing import Dict
 
 class QueryValidator:
     """
-    Minimal validator - only checks query type and analysis method.
-    Lets the agent handle region detection, boundary finding, and validation.
+    MINIMAL validator - only filters out obvious non-data queries.
+    The AGENT handles everything else including:
+    - Determining if it's a greeting
+    - Figuring out what information is missing
+    - Asking for clarification
+    
+    This validator ONLY checks:
+    1. Is this completely unrelated to weather/hydrology?
+    2. Does this look like it might need data?
     """
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         
-        # Data query indicators
-        self.DATA_QUERY_INDICATORS = [
-            'show', 'map', 'plot', 'visualize', 'display', 'chart', 'graph',
-            'what is', 'what was', 'tell me', 'how much', 'calculate',
-            'average', 'mean', 'max', 'min', 'trend', 'compare', 'analyze',
-            'find', 'get', 'give me', 'i want', 'i need'
+        # Only filter out OBVIOUSLY non-weather topics
+        self.NON_WEATHER_TOPICS = [
+            'apple', 'banana', 'orange', 'fruit', 'food', 'recipe',
+            'movie', 'film', 'tv show', 'actor', 'actress',
+            'car', 'vehicle', 'automobile', 'truck',
+            'phone', 'computer', 'laptop', 'software',
+            'book', 'novel', 'author', 'poem',
+            'song', 'music', 'album', 'artist', 'band',
+            'game', 'video game', 'sport', 'soccer', 'football', 'basketball',
+            'politics', 'politician', 'election', 'president',
+            'stock', 'market', 'finance', 'investment'
         ]
         
-        # Analysis query indicators - queries that find regions/extremes
+        # Analysis method indicators (still needed for extreme queries)
         self.ANALYSIS_INDICATORS = [
             'top', 'hottest', 'coldest', 'warmest', 'wettest', 'driest',
             'most', 'highest', 'lowest', 'extreme', 'worst', 'best',
             'find regions', 'where are', 'which areas', 'significant'
         ]
         
-        # Weather/hydrology domain keywords (broad check)
-        self.DOMAIN_KEYWORDS = [
-            'temperature', 'temp', 'precipitation', 'rain', 'drought', 'spi',
-            'humidity', 'moisture', 'wind', 'pressure', 'weather', 'climate',
-            'hot', 'cold', 'warm', 'wet', 'dry'
-        ]
-        
-        # Analysis method indicators
         self.PIXEL_INDICATORS = ['pixel', 'grid', 'exact', 'coordinate', 'point']
         self.AREA_INDICATORS = ['rectangle', 'rectangular', 'area', 'box', 'region', 'zone', 'km', 'km²', 'km2', 'square km']
     
     def validate_query(self, user_query: str) -> Dict:
         """
-        Minimal validation - only check query type and analysis method.
-        Let agent handle everything else (regions, dates, boundaries, etc.)
+        Minimal validation - just filter obvious non-weather queries.
+        Everything else goes to the agent to handle intelligently.
         """
         query_lower = user_query.lower().strip()
         
-        # Step 1: Is this general conversation? (greetings, thanks, etc.)
-        if self._is_general_conversation(query_lower):
+        # Step 1: Is this obviously NOT about weather/hydrology?
+        if self._is_obviously_non_weather(query_lower):
+            # Still let agent handle it - agent can politely explain what it does
             return {
                 'is_data_query': False,
                 'is_analysis_query': False,
+                'query_type': 'non_weather_topic',
                 'is_valid': True,
-                'should_execute_agent': True
+                'should_execute_agent': True,
+                'message': None
             }
         
-        # Step 2: Is this a data query?
-        is_data_query = self._is_data_query(query_lower)
+        # Step 2: Check if it's an analysis query (needs method specification)
+        is_analysis = self._is_analysis_query(query_lower)
         
-        if not is_data_query:
-            # Not a data query, but not general conversation either
-            # Let agent handle it (might be capability question, etc.)
-            return {
-                'is_data_query': False,
-                'is_analysis_query': False,
-                'is_valid': True,
-                'should_execute_agent': True
-            }
+        if is_analysis:
+            # Validate analysis method
+            extracted = self._extract_analysis_method(query_lower)
+            
+            if not extracted['has_method']:
+                return {
+                    'is_data_query': True,
+                    'is_analysis_query': True,
+                    'query_type': 'analysis_missing_method',
+                    'is_valid': False,
+                    'missing_analysis_method': True,
+                    'extracted_params': extracted,
+                    'message': self._generate_analysis_method_message(),
+                    'should_execute_agent': False
+                }
+            
+            if extracted['method'] == 'rectangular' and not extracted['area_size']:
+                return {
+                    'is_data_query': True,
+                    'is_analysis_query': True,
+                    'query_type': 'analysis_missing_area',
+                    'is_valid': False,
+                    'missing_area_size': True,
+                    'extracted_params': extracted,
+                    'message': self._generate_area_size_message(),
+                    'should_execute_agent': False
+                }
         
-        # Step 3: Is this an analysis query (finding extremes)?
-        is_analysis_query = self._is_analysis_query(query_lower)
-        
-        if not is_analysis_query:
-            # Regular data query (specific location) - agent handles everything
-            return {
-                'is_data_query': True,
-                'is_analysis_query': False,
-                'is_valid': True,
-                'should_execute_agent': True
-            }
-        
-        # Step 4: For analysis queries, check if analysis method is specified
-        extracted = self._extract_analysis_method(query_lower)
-        
-        if not extracted['has_method']:
-            # Missing analysis method - ask user
-            return {
-                'is_data_query': True,
-                'is_analysis_query': True,
-                'is_valid': False,
-                'missing_analysis_method': True,
-                'extracted_params': extracted,
-                'message': self._generate_analysis_method_message(),
-                'should_execute_agent': False
-            }
-        
-        if extracted['method'] == 'rectangular' and not extracted['area_size']:
-            # Has rectangular method but missing size
-            return {
-                'is_data_query': True,
-                'is_analysis_query': True,
-                'is_valid': False,
-                'missing_area_size': True,
-                'extracted_params': extracted,
-                'message': self._generate_area_size_message(),
-                'should_execute_agent': False
-            }
-        
-        # All good - execute analysis
+        # Step 3: Everything else - let agent handle it!
+        # Agent will determine if it's:
+        # - A greeting → respond naturally
+        # - Missing info → ask for what's needed
+        # - Complete query → execute
         return {
-            'is_data_query': True,
-            'is_analysis_query': True,
+            'is_data_query': None,  # Agent determines
+            'is_analysis_query': is_analysis,
+            'query_type': 'let_agent_handle',
             'is_valid': True,
-            'extracted_params': extracted,
-            'should_execute_agent': True
+            'should_execute_agent': True,
+            'extracted_params': extracted if is_analysis else None,
+            'message': None
         }
     
-    def _is_general_conversation(self, query_lower: str) -> bool:
-        """Quick check for greetings and casual chat"""
-        greetings = [
-            'hello', 'hi ', 'hey ', 'good morning', 'good afternoon', 'good evening',
-            'thanks', 'thank you', "how are you", "what's up", 'bye', 'goodbye'
-        ]
-        return any(g in query_lower for g in greetings) and len(query_lower.split()) < 10
+    def _is_obviously_non_weather(self, query_lower: str) -> bool:
+        """
+        Only filter out OBVIOUSLY non-weather topics.
+        This is very conservative - when in doubt, let the agent handle it.
+        """
+        # Check if query is asking about non-weather topics
+        for topic in self.NON_WEATHER_TOPICS:
+            if topic in query_lower:
+                # Make sure it's not a place name that happens to contain the word
+                # e.g., "Apple Valley, California" should not be filtered
+                if not self._could_be_place_name(query_lower, topic):
+                    self.logger.info(f"🚫 Filtering non-weather topic: {topic}")
+                    return True
+        
+        return False
     
-    def _is_data_query(self, query_lower: str) -> bool:
+    def _could_be_place_name(self, query_lower: str, word: str) -> bool:
         """
-        Check if this is asking for data/analysis.
-        Only checks for action indicators + domain keywords.
-        Does NOT validate if specific parameters are present.
+        Check if the word might be part of a place name.
+        Conservative - when in doubt, assume it could be a place.
         """
-        # Special case: "show me the map" with no other context
-        if query_lower in ['show me the map', 'show the map', 'show map', 'show me map']:
-            return False  # Too vague
-        
-        # Special case: very short queries with "map"
-        if 'map' in query_lower and len(query_lower.split()) <= 4:
-            return False
-        
-        # Check for data query indicators
-        has_indicator = any(indicator in query_lower for indicator in self.DATA_QUERY_INDICATORS)
-        
-        if not has_indicator:
-            return False
-        
-        # Check if it mentions our domain
-        has_domain = any(keyword in query_lower for keyword in self.DOMAIN_KEYWORDS)
-        
-        return has_domain
+        # If there are location indicators nearby, might be a place
+        location_words = ['in ', 'at ', 'near ', 'of ', 'for ', 'city', 'town', 'county', 'valley']
+        return any(loc in query_lower for loc in location_words)
     
     def _is_analysis_query(self, query_lower: str) -> bool:
         """Check if this is asking to find regions/extremes"""
         return any(indicator in query_lower for indicator in self.ANALYSIS_INDICATORS)
     
     def _extract_analysis_method(self, query_lower: str) -> Dict:
-        """Extract only analysis method and area size - nothing else"""
+        """Extract analysis method and area size"""
         extracted = {
             'has_method': False,
             'method': None,
