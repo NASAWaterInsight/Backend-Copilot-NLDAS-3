@@ -6,7 +6,7 @@ import builtins
 def analyze_extreme_regions(user_request: str):
     """
     Pre-written analysis function that finds extreme regions without agent code generation.
-    This bypasses the agent entirely for analysis queries.
+    ❌ REMOVED: Default time values - must be explicitly provided in query
     """
     try:
         import re
@@ -47,13 +47,23 @@ def analyze_extreme_regions(user_request: str):
             lon_min, lon_max = -79.5, -75.0
             region_name = 'Maryland'
         
-        # Extract year and month using EXACT pattern
+        # Extract year and month - NO DEFAULTS
         year_match = re.search(r'(20\d{2})', user_request)
-        year = int(year_match.group(1)) if year_match else 2020
+        if not year_match:
+            return {
+                "status": "error",
+                "error": "No year specified in query. Please specify a year (e.g., '2023')."
+            }
+        year = int(year_match.group(1))
         
         month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_request.lower())
+        if not month_match:
+            return {
+                "status": "error", 
+                "error": "No month specified in query. Please specify a month (e.g., 'May', 'January')."
+            }
         month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
-        month = month_names.index(month_match.group(1)) + 1 if month_match else 5
+        month = month_names.index(month_match.group(1)) + 1
         
         # Get account key
         account_key = get_account_key()
@@ -226,7 +236,33 @@ def execute_custom_code(args: dict):
         user_request = args.get("user_request", "Unknown request")
         python_code = args.get("python_code", "")
 
-        # NEW: Check if this is an analysis query and handle directly
+        # NEW: Check if this is an SPI query without time period
+        if ('spi' in user_request.lower() or 'drought' in user_request.lower()) and not any(word in user_request.lower() for word in ['2020', '2021', '2022', '2023', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']):
+            logging.info(f"🔍 Detected SPI query without time period - using latest available data")
+            
+            # Return error asking for time period
+            return {
+                "status": "error",
+                "error": f"Please specify a time period for SPI data. Available data: 2003-01 to 2023-12. Example: 'What is the SPI in East Lansing for December 2023?'",
+                "user_request": user_request,
+                "available_range": "2003-01 to 2023-12",
+                "suggestion": "Try: 'What is the SPI in East Lansing for December 2023?'"
+            }
+
+        # NEW: Check if this is a temperature query without time period  
+        if ('temperature' in user_request.lower() or 'temp' in user_request.lower()) and not any(word in user_request.lower() for word in ['2023', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']):
+            logging.info(f"🔍 Detected temperature query without time period")
+            
+            # Return error asking for time period
+            return {
+                "status": "error", 
+                "error": f"Please specify a time period for temperature data. Available data: 2023 (January-December). Example: 'What is the temperature in East Lansing for May 2023?'",
+                "user_request": user_request,
+                "available_range": "2023 (January-December)",
+                "suggestion": "Try: 'What is the temperature in East Lansing for May 2023?'"
+            }
+
+        # Continue with existing analysis query check
         analysis_keywords = ['most significant', 'most extreme', 'hottest', 'coldest', 'warmest', 'wettest', 'driest', 'highest', 'lowest', 'top', 'worst', 'best', 'find', 'where are']
         is_analysis_query = any(phrase in user_request.lower() for phrase in analysis_keywords)
         

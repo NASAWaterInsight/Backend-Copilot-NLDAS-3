@@ -258,13 +258,12 @@ def find_available_kerchunk_files(account_name: str, account_key: str):
 def load_specific_date_kerchunk(account_name: str, account_key: str, year: int, month: int, day: int):
     """
     Load kerchunk data for a specific date with enhanced error handling
-    UPDATED: Dynamic date validation - no hard-coded limits
+    UPDATED: NO DEFAULT VALUES - all parameters must be explicitly provided
     """
     # Format the date as NLDAS expects
     nldas_date, dt = parse_date_to_nldas_format(year, month, day)
     
-    # REMOVED: Hard-coded year validation - let the system be flexible
-    # Only validate basic date format
+    # Basic validation only
     if month < 1 or month > 12:
         raise ValueError(f"Month must be 1-12. Requested: {month}")
     
