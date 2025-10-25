@@ -2,14 +2,12 @@
   "project_endpoint": "https://nldas-test-resource.services.ai.azure.com/api/projects/nldas-test",
   "agents": {
     "text": {
-      "id": "asst_ISMz8n5Tym55a7qFMn0J8Kgn",
-      "name": "nldas3-intelligent-agent",
+      "id": "asst_7p3xktexjmTSt4rfl1SQ20Q0",
+      "name": "nldas3-final-agent-with-formatted-timeseries",
       "model": "gpt-4o",
       "capabilities": [
-        "intelligent-conversation",
-        "requirement-validation",
-        "contextual-responses",
         "direct-code-execution",
+        "subplot-creation",
         "proper-colorbar-scaling",
         "map-generation",
         "formatted-time-series"
@@ -24,12 +22,12 @@
         {
           "type": "function",
           "name": "execute_custom_code",
-          "description": "Execute custom Python code for NLDAS-3 analysis - only called when all requirements (location, time, variable) are present"
+          "description": "Execute custom Python code for NLDAS-3 analysis with proper formatting"
         }
       ]
     },
     "visualization": {
-      "id": "asst_EuVd4X1k0hdvfAj7yxIsM18T",
+      "id": "asst_CHSWSoyJWC5nhD3z3LFJfzj6",
       "name": "nldas3-visualization-agent",
       "model": "gpt-4o",
       "capabilities": [

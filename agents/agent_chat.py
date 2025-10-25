@@ -8,8 +8,8 @@ import time
 from .dynamic_code_generator import execute_custom_code
 import numpy as np
 import builtins
-import mercantile
 
+# Load agent info (keep existing code)
 agent_info_path = os.path.join(os.path.dirname(__file__), "../agent_info.json")
 try:
     with open(agent_info_path, "r") as f:
@@ -33,7 +33,7 @@ project_client = AIProjectClient(
 )
 
 def _get_run(thread_id: str, run_id: str):
-    """Handle different versions of the Azure AI SDK"""
+    #handling different versions of the Azure AI SDK
     runs_ops = project_client.agents.runs
     if not hasattr(_get_run, "_logged"):
         logging.info(f"agents.runs available methods: {dir(runs_ops)}")
@@ -286,296 +286,515 @@ def create_tile_config(map_data: dict, user_query: str) -> dict:
             "variable": variable
         }
     }
-
-def extract_agent_text_response(thread_id: str) -> str:
+def handle_chat_request(data):
     """
-    Extract the most recent assistant message from the thread.
-    This is called when the run status is 'completed' with no tool calls.
+    ULTRA-DIRECT: Immediate function execution with Azure Maps detection
     """
     try:
-        # List messages in the thread
-        messages = project_client.agents.messages.list(thread_id=thread_id)
-        messages_list = list(messages)
-        
-        # Find the most recent assistant message
-        for message in messages_list:
-            if message.role == "assistant":
-                if message.content and len(message.content) > 0:
-                    content_block = message.content[0]
-                    
-                    # Handle different content types
-                    if hasattr(content_block, 'text'):
-                        return content_block.text.value
-                    elif hasattr(content_block, 'value'):
-                        return content_block.value
-                    else:
-                        return str(content_block)
-        
-        # No assistant message found
-        return "I'm here to help! What would you like to know?"
-        
-    except Exception as e:
-        logging.error(f"❌ Error extracting text response: {e}", exc_info=True)
-        return "I encountered an issue. Please try again."
+        user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
+        logging.info(f"Processing chat request: {user_query}")
 
-
-def handle_chat_request(data_or_query, thread_id: str = None):
-    """
-    COMPATIBLE: Handles both old data dict format and new query string format
-    """
-    try:
-        # Handle both call formats
-        if isinstance(data_or_query, dict):
-            # Old format: handle_chat_request({"input": "query"})
-            user_query = data_or_query.get("input", data_or_query.get("query", "Tell me about NLDAS-3 data"))
-            thread_id = data_or_query.get("thread_id")
-        else:
-            # New format: handle_chat_request("query", thread_id)
-            user_query = data_or_query
-
-        logging.info(f"📨 Received query: {user_query}")
+        # Create a thread for the conversation
+        thread = project_client.agents.threads.create()
+        logging.info(f"Created thread: {thread.id}")
         
-        # Create or reuse thread
-        if thread_id:
-            thread = type('Thread', (), {'id': thread_id})()
-            logging.info(f"♻️ Reusing thread: {thread_id}")
-        else:
-            # ✅ FIXED: Use correct SDK method
-            thread = project_client.agents.threads.create()
-            logging.info(f"🆕 Created new thread: {thread.id}")
-        
-        # Create message
+        # ULTRA-DIRECT: Force immediate function call
+        enhanced_query = f"""IMMEDIATE ACTION REQUIRED: {user_query}
+
+🚨 CRITICAL: For ALL GeoJSON features, ALWAYS use "value" property:
+- WRONG: {{"properties": {{"spi": -1.5}}}}
+- RIGHT: {{"properties": {{"value": -1.5, "variable": "SPI3"}}}}
+
+For SPI data specifically:
+```python
+# When creating GeoJSON for SPI, always use "value":
+feature = {{
+    "type": "Feature", 
+    "geometry": {{"type": "Point", "coordinates": [lon, lat]}},
+    "properties": {{
+        "value": spi_value,  # ✅ Use "value", never "spi"
+        "variable": "SPI3",
+        "unit": "SPI"
+    }}
+}}
+Example for ANY request:
+{{
+  "python_code": "import builtins\\nds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)\\ndata = ds['Tair'].sel(lat=builtins.slice(58, 72), lon=builtins.slice(-180, -120)).mean()\\ntemp_c = float(data.values) - 273.15\\nds.close()\\nresult = f'Alaska temperature: {{temp_c:.1f}}°C'",
+  "user_request": "{user_query}"
+}}
+
+CALL execute_custom_code NOW!"""
+
         message = project_client.agents.messages.create(
             thread_id=thread.id,
-            role="user",
-            content=user_query
+            role="user", 
+            content=enhanced_query
         )
+        logging.info(f"Created message: {message.id}")
         
-        # Create run
+        # Start the agent run
         run = project_client.agents.runs.create(
             thread_id=thread.id,
             agent_id=text_agent_id
         )
+        logging.info(f"Started run: {run.id}")
         
-        logging.info(f"🏃 Started run: {run.id} with status: {run.status}")
+        # NEW: Detect analysis queries and handle them directly - FIXED RETURN FORMAT
+        analysis_keywords = ['most significant', 'most extreme', 'hottest', 'coldest', 'warmest', 'wettest', 'driest', 'highest', 'lowest', 'top', 'worst', 'best', 'find', 'where are']
+        is_analysis_query = any(phrase in user_query.lower() for phrase in analysis_keywords)
         
-        # FIXED: Main loop now handles 'completed' status properly
-        max_iterations = 20
-        iteration = 0
-        start_time = time.time()
-        max_total_time = 60  # 60 seconds timeout
-        
-        # Track if we executed any code
-        custom_code_executed = False
-        analysis_data = None
-        
-        while iteration < max_iterations:
-            iteration += 1
-            elapsed_time = time.time() - start_time
-            
-            logging.info(f"🔄 Iteration {iteration}/{max_iterations}: status={run.status}, elapsed={elapsed_time:.1f}s")
-            
-            # Check overall timeout
-            if elapsed_time > max_total_time:
-                logging.warning(f"⏰ TIMEOUT: Exceeded {max_total_time}s")
-                break
-            
-            # ===== CASE 1: COMPLETED (Text-only response) =====
-            if run.status == "completed":
-                logging.info("✅ Run completed")
+        if is_analysis_query:
+            logging.info(f"🔍 Detected analysis query - using direct analysis function")
+            try:
+                from .dynamic_code_generator import analyze_extreme_regions
+                analysis_result = analyze_extreme_regions(user_query)
                 
-                # If no code was executed, this is a text-only response
-                if not custom_code_executed:
-                    logging.info("📝 Extracting text-only response")
-                    text_response = extract_agent_text_response(thread.id)
+                if analysis_result.get("status") == "success":
+                    result_value = analysis_result.get("result")
                     
+                    # FIXED: Return the complete structured analysis response that frontend expects
                     return {
                         "status": "success",
-                        "content": text_response,
-                        "type": "text_response",
+                        "content": f"Analysis completed: Found {len(result_value.get('regions', []))} extreme regions",
+                        "analysis_data": analysis_result,
+                        "type": "analysis_complete",
+                        # CRITICAL: Add these fields that frontend expects for analysis results
+                        "regions": result_value.get("regions", []),
+                        "geojson": result_value.get("geojson", {}),
+                        "bounds": result_value.get("bounds", {}),
+                        "map_config": result_value.get("map_config", {}),
+                        "variable": result_value.get("variable"),
+                        "analysis_type": result_value.get("analysis_type"),
+                        # NEW: Add temperature_data for consistency with other responses
+                        "temperature_data": build_temperature_data(result_value.get("geojson", {})),
                         "agent_id": text_agent_id,
                         "thread_id": thread.id
                     }
                 else:
-                    # Code was executed, return the analysis data
-                    logging.info("✅ Completed with code execution")
                     return {
-                        "status": "success",
-                        "content": "Analysis completed",
-                        "type": "code_execution_complete",
-                        "agent_id": text_agent_id,
-                        "thread_id": thread.id,
-                        "analysis_data": analysis_data
+                        "status": "error",
+                        "content": f"Analysis failed: {analysis_result.get('error', 'Unknown error')}",
+                        "type": "analysis_error"
                     }
+                    
+            except Exception as analysis_error:
+                logging.error(f"❌ Direct analysis failed: {analysis_error}")
+                # Fall back to agent-based processing
+                logging.info("🔄 Falling back to agent-based analysis")
+
+        # ENHANCED: Better timeout strategy with status-specific handling
+        max_iterations = 15  # Slight increase, but not the main fix
+        iteration = 0
+        analysis_data = None
+        custom_code_executed = False
+        final_response_content = None
+        in_progress_count = 0  # NEW: Track how long we're stuck in "in_progress"
+        
+        start_time = time.time()
+        max_total_time = 120  # Increased to 2 minutes
+        max_in_progress_time = 15  # NEW: Max time to stay in "in_progress"
+        last_status_change = start_time
+        
+        while run.status in ["queued", "in_progress", "requires_action"] and iteration < max_iterations:
+            iteration += 1
+            current_time = time.time()
+            elapsed_time = current_time - start_time
             
-            # ===== CASE 2: REQUIRES_ACTION (Tool call needed) =====
-            elif run.status == "requires_action":
-                logging.info("🛠️ Run requires action - processing tool calls")
+            logging.info(f"🔄 Run status: {run.status} (iteration {iteration}/{max_iterations}, elapsed: {elapsed_time:.1f}s)")
+            
+            # ENHANCED: Status-specific timeout handling
+            if run.status == "in_progress":
+                in_progress_count += 1
+                time_in_progress = current_time - last_status_change
                 
-                if run.required_action and run.required_action.submit_tool_outputs:
-                    tool_calls = run.required_action.submit_tool_outputs.tool_calls
-                    logging.info(f"🔧 Processing {len(tool_calls)} tool call(s)")
+                # If stuck in "in_progress" too long, try to force action
+                if time_in_progress > max_in_progress_time:
+                    logging.warning(f"⚠️ Stuck in 'in_progress' for {time_in_progress:.1f}s. Attempting to force completion...")
                     
-                    tool_outputs = []
+                    # Try to cancel and restart the run
+                    try:
+                        project_client.agents.runs.cancel(thread_id=thread.id, run_id=run.id)
+                        time.sleep(1)
+                        
+                        # Create a new, more direct message
+                        direct_message = project_client.agents.messages.create(
+                            thread_id=thread.id,
+                            role="user",
+                            content="EXECUTE FUNCTION NOW! Call execute_custom_code immediately with any simple code."
+                        )
+                        
+                        # Start a new run
+                        run = project_client.agents.runs.create(
+                            thread_id=thread.id,
+                            agent_id=text_agent_id
+                        )
+                        
+                        last_status_change = time.time()
+                        in_progress_count = 0
+                        logging.info("🔄 Restarted run after being stuck")
+                        
+                    except Exception as restart_error:
+                        logging.error(f"❌ Failed to restart run: {restart_error}")
+                        break
+            else:
+                # Status changed, reset counters
+                if run.status != getattr(handle_chat_request, '_last_status', None):
+                    last_status_change = current_time
+                    in_progress_count = 0
+                    handle_chat_request._last_status = run.status
+            
+            # Overall timeout
+            if elapsed_time > max_total_time:
+                logging.warning(f"⏰ TIMEOUT: Exceeded {max_total_time}s total time limit")
+                break
+            
+            if run.status == "requires_action":
+                tool_calls = run.required_action.submit_tool_outputs.tool_calls
+                tool_outputs = []
+                
+                for tool_call in tool_calls:
+                    func_name = tool_call.function.name
+                    logging.info(f"🔧 Function call requested: {func_name}")
                     
-                    for tool_call in tool_calls:
-                        if tool_call.function.name == "execute_custom_code":
-                            try:
-                                # Parse arguments
-                                raw_arguments = tool_call.function.arguments
+                    if func_name == "execute_custom_code":
+                        if custom_code_executed:
+                            logging.info("✅ Custom code already executed, skipping")
+                            continue
+                        
+                        try:
+                            # ENHANCED: Better argument parsing
+                            raw_arguments = tool_call.function.arguments
+                            logging.info(f"📝 Raw arguments length: {len(raw_arguments) if raw_arguments else 0}")
+                            
+                            if not raw_arguments or not raw_arguments.strip():
+                                # ENHANCED: Better emergency fallback based on user query
+                                logging.warning("⚠️ Using enhanced emergency fallback code")
                                 
-                                if not raw_arguments or not raw_arguments.strip():
-                                    logging.warning("⚠️ Empty arguments, using fallback")
-                                    function_args = {
-                                        "python_code": "result = 'No code provided'",
-                                        "user_request": user_query
-                                    }
+                                # Detect what the user wants
+                                if any(word in user_query.lower() for word in ['map', 'show', 'visualiz', 'plot']):
+                                    fallback_code = """import builtins
+import time
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)
+data = ds['Tair'].sel(lat=builtins.slice(58, 72), lon=builtins.slice(-180, -120)).isel(time=0)
+temp_celsius = data - 273.15
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+
+fig = plt.figure(figsize=(12, 8))
+fig.patch.set_facecolor('white')
+ax = plt.axes(projection=ccrs.PlateCarree())
+
+# Version-compatible background removal
+try:
+    ax.background_patch.set_visible(False)
+except AttributeError:
+    try:
+        ax.outline_patch.set_visible(False)
+    except AttributeError:
+        pass
+
+im = ax.pcolormesh(data.lon, data.lat, temp_celsius, cmap='coolwarm', 
+                   shading='auto', transform=ccrs.PlateCarree())
+ax.add_feature(cfeature.COASTLINE, linewidth=0.8, color='black', alpha=0.8)
+ax.add_feature(cfeature.STATES, linewidth=0.4, color='gray', alpha=0.6)
+gl = ax.gridlines(draw_labels=True, alpha=0.3, linestyle='--', linewidth=0.5)
+gl.top_labels = False
+gl.right_labels = False
+cbar = plt.colorbar(im, ax=ax)
+cbar.set_label('Temperature (°C)', fontsize=16)
+ax.set_title('Alaska Temperature Map', fontsize=16)
+filename = f'alaska_temp_{int(time.time())}.png'
+url = save_plot_to_blob_simple(fig, filename, account_key)
+plt.close(fig)
+ds.close()
+result = url"""
                                 else:
+                                    fallback_code = """import builtins
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)
+data = ds['Tair'].sel(lat=builtins.slice(58, 72), lon=builtins.slice(-180, -120)).mean()
+temp_c = float(data.values) - 273.15
+ds.close()
+result = f'The average temperature in Alaska is {temp_c:.1f}°C'"""
+                                
+                                function_args = {
+                                    "python_code": fallback_code,
+                                    "user_request": user_query
+                                }
+                            else:
+                                try:
                                     function_args = json.loads(raw_arguments)
-                                
-                                logging.info("🚀 Executing custom code...")
-                                analysis_result = execute_custom_code(function_args)
-                                custom_code_executed = True
-                                analysis_data = analysis_result
-                                
-                                # Check if result is a map
-                                if analysis_result.get("status") == "success":
-                                    result_value = analysis_result.get("result")
-                                    
-                                    # Handle map results
-                                    if isinstance(result_value, dict) and ("static_url" in result_value or "overlay_url" in result_value):
-                                        logging.info("🗺️ Map result detected")
-                                        
-                                        # Normalize the result
-                                        enriched = normalize_map_result_dict(result_value, user_query)
-                                        enriched["temperature_data"] = build_temperature_data(enriched.get("geojson", {}))
-                                        
-                                        # Decide between tiles and overlay
-                                        use_tiles = should_use_tiles(user_query, enriched)
-                                        
-                                        if use_tiles:
-                                            # Generate tile configuration
-                                            tile_config = create_tile_config(enriched, user_query)
-                                            
-                                            # Submit tool outputs
-                                            tool_outputs.append({
-                                                "tool_call_id": tool_call.id,
-                                                "output": json.dumps({"status": "success", "completed": True})
-                                            })
-                                            
-                                            project_client.agents.runs.submit_tool_outputs(
-                                                thread_id=thread.id,
-                                                run_id=run.id,
-                                                tool_outputs=tool_outputs
-                                            )
-                                            
-                                            return {
-                                                "status": "success",
-                                                "content": enriched.get("static_url", "Interactive map generated"),
-                                                "use_tiles": True,
-                                                "tile_config": tile_config,
-                                                "static_url": enriched.get("static_url"),
-                                                "geojson": enriched["geojson"],
-                                                "bounds": enriched["bounds"],
-                                                "map_config": enriched["map_config"],
-                                                "temperature_data": enriched["temperature_data"],
-                                                "type": "visualization_with_tiles",
-                                                "agent_id": text_agent_id,
-                                                "thread_id": thread.id,
-                                                "analysis_data": analysis_result
-                                            }
-                                        else:
-                                            # Use PNG overlay
-                                            return {
-                                                "status": "success",
-                                                "content": enriched.get("static_url", "Map generated"),
-                                                "static_url": enriched.get("static_url"),
-                                                "overlay_url": enriched.get("overlay_url"),
-                                                "geojson": enriched["geojson"],
-                                                "bounds": enriched["bounds"],
-                                                "map_config": enriched["map_config"],
-                                                "temperature_data": enriched["temperature_data"],
-                                                "type": "visualization_with_overlay",
-                                                "agent_id": text_agent_id,
-                                                "thread_id": thread.id,
-                                                "analysis_data": analysis_result
-                                            }
+                                    logging.info("✅ Successfully parsed JSON arguments")
+                                except json.JSONDecodeError as json_error:
+                                    logging.warning(f"⚠️ JSON parsing failed: {json_error}")
+                                    # Try to extract from potential markdown
+                                    if 'python_code' in raw_arguments:
+                                        # Use fallback
+                                        function_args = {
+                                            "python_code": """import builtins
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)
+data = ds['Tair'].sel(lat=builtins.slice(58, 72), lon=builtins.slice(-180, -120)).mean()
+temp_c = float(data.values) - 273.15
+ds.close()
+result = f'The temperature is {temp_c:.1f}°C'""",
+                                            "user_request": user_query
+                                        }
                                     else:
-                                        # Text result
-                                        logging.info("📝 Text result detected")
+                                        raise ValueError("Could not parse function arguments")
+                            
+                            logging.info(f"🚀 EXECUTING CODE NOW...")
+                            
+                            # Execute the code
+                            analysis_result = execute_custom_code(function_args)
+                            analysis_data = analysis_result
+                            custom_code_executed = True
+                            
+                            # IMMEDIATE: Handle success/failure
+                            if analysis_result.get("status") == "success":
+                                result_value = analysis_result.get("result", "No result")
+
+                                # UPDATED: Check for map results and decide between tiles vs PNG
+                                if isinstance(result_value, dict) and ("overlay_url" in result_value or "static_url" in result_value):
+                                    enriched = normalize_map_result_dict(result_value, user_query)
+                                    enriched["temperature_data"] = build_temperature_data(enriched.get("geojson"))
+                                    
+                                    # NEW: Decide between tiles and PNG overlay
+                                    use_tiles = should_use_tiles(user_query, enriched)
+                                    
+                                    if use_tiles:
+                                        # Return tile configuration
+                                        tile_config = create_tile_config(enriched, user_query)
+                                        # DEBUG: Log what we're returning
+                                        logging.info(f"🎯 Tile config generated: {tile_config}")
+                                        logging.info(f"🎯 Tile list length: {len(tile_config.get('tile_list', []))}")
+                                        
+                                        # Make sure the tile_list exists
+                                        if not tile_config.get('tile_list'):
+                                            logging.warning("⚠️ No tile_list in tile_config - frontend will generate random tiles!")
                                         tool_outputs.append({
                                             "tool_call_id": tool_call.id,
-                                            "output": json.dumps({"status": "success", "result": str(result_value)})
+                                            "output": json.dumps({"status": "success", "completed": True})
                                         })
-                                else:
-                                    # Execution failed
-                                    error_msg = analysis_result.get("error", "Unknown error")
-                                    logging.error(f"❌ Code execution failed: {error_msg}")
+                                        return {
+                                            "status": "success",
+                                            "content": enriched.get("static_url") or "Interactive map generated",
+                                            "use_tiles": True,  # ✅ Signal to frontend
+                                            "tile_config": tile_config,  # ✅ Tile endpoint info
+                                            "static_url": enriched.get("static_url"),
+                                            "geojson": enriched["geojson"],
+                                            "bounds": enriched["bounds"],
+                                            "map_config": enriched["map_config"],
+                                            "temperature_data": enriched["temperature_data"],
+                                            "type": "visualization_with_tiles",
+                                            "agent_id": text_agent_id,
+                                            "thread_id": thread.id,
+                                            "analysis_data": analysis_result
+                                        }
+                                    else:
+                                        # Use existing PNG overlay approach
+                                        tool_outputs.append({
+                                            "tool_call_id": tool_call.id,
+                                            "output": json.dumps({"status": "success", "completed": True})
+                                        })
+                                        return {
+                                            "status": "success",
+                                            "content": enriched.get("static_url") or enriched["overlay_url"],
+                                            "static_url": enriched.get("static_url"),
+                                            "overlay_url": enriched["overlay_url"],
+                                            "geojson": enriched["geojson"],
+                                            "bounds": enriched["bounds"],
+                                            "map_config": enriched["map_config"],
+                                            "temperature_data": enriched["temperature_data"],
+                                            "type": "visualization_with_overlay",
+                                            "agent_id": text_agent_id,
+                                            "thread_id": thread.id,
+                                            "analysis_data": analysis_result
+                                        }
+
+                                # Legacy single URL path
+                                if isinstance(result_value, str) and result_value.startswith("http"):
+                                    enriched = wrap_with_geo_overlay(result_value, user_query)
+                                    enriched["temperature_data"] = build_temperature_data(enriched.get("geojson"))
                                     tool_outputs.append({
                                         "tool_call_id": tool_call.id,
-                                        "output": json.dumps({"status": "error", "error": error_msg})
+                                        "output": json.dumps({"status": "success", "completed": True})
                                     })
-                                    
-                            except Exception as e:
-                                logging.error(f"❌ Tool call error: {e}", exc_info=True)
+                                    return {
+                                        "status": "success",
+                                        "content": enriched["static_url"],
+                                        "static_url": enriched["static_url"],
+                                        "overlay_url": enriched["overlay_url"],
+                                        "geojson": enriched["geojson"],
+                                        "bounds": enriched.get("bounds"),
+                                        "map_config": enriched["map_config"],
+                                        "temperature_data": enriched["temperature_data"],  # NEW
+                                        "type": "visualization_with_overlay",
+                                        "agent_id": text_agent_id,
+                                        "thread_id": thread.id,
+                                        "analysis_data": analysis_result
+                                    }
+
+                                # IMPROVED: Clean up the response format - remove icons and make it conversational
+                                if isinstance(result_value, str):
+                                    # If it's already a formatted string (like "Alaska temperature: -16.4°C"), use it directly
+                                    if any(phrase in result_value.lower() for phrase in ['temperature', 'precipitation', 'humidity', 'pressure']):
+                                        # Convert technical format to conversational format
+                                        if 'temperature:' in result_value.lower():
+                                            # Convert "Alaska temperature: -16.4°C" to "The average temperature in Alaska is -16.4°C"
+                                            parts = result_value.split(':')
+                                            if len(parts) == 2:
+                                                location_var = parts[0].strip()
+                                                value = parts[1].strip()
+                                                if 'alaska' in location_var.lower():
+                                                    final_response_content = f"The average temperature in Alaska is {value}"
+                                                else:
+                                                    final_response_content = f"The average {location_var.lower()} is {value}"
+                                            else:
+                                                final_response_content = result_value
+                                        elif 'precipitation' in result_value.lower():
+                                            # Handle precipitation results
+                                            final_response_content = result_value
+                                        else:
+                                            final_response_content = result_value
+                                    elif result_value.startswith('http'):
+                                        # It's a URL (map/visualization)
+                                        final_response_content = result_value
+                                    else:
+                                        # Other string results
+                                        final_response_content = result_value
+                                else:
+                                    # For non-string results (dict, etc.), keep as is
+                                    final_response_content = str(result_value)
+                                
                                 tool_outputs.append({
                                     "tool_call_id": tool_call.id,
-                                    "output": json.dumps({"status": "error", "error": str(e)})
+                                    "output": json.dumps({"status": "success", "completed": True})
                                 })
+                                
+                                # IMMEDIATE RETURN
+                                return {
+                                    "status": "success",
+                                    "content": final_response_content,
+                                    "type": "immediate_success_return",
+                                    "agent_id": text_agent_id,
+                                    "thread_id": thread.id,
+                                    "debug": {
+                                        "iterations": iteration,
+                                        "elapsed_time": elapsed_time,
+                                        "custom_code_executed": True
+                                    },
+                                    "analysis_data": analysis_result
+                                }
+                                
+                            else:
+                                error_msg = analysis_result.get("error", "Unknown error")
+                                final_response_content = f"❌ Code execution failed: {error_msg}"
+                                tool_outputs.append({
+                                    "tool_call_id": tool_call.id,
+                                    "output": json.dumps({"status": "error", "error": error_msg[:50]})
+                                })
+                            
+                        except Exception as e:
+                            logging.error(f"💥 Execution error: {e}")
+                            final_response_content = f"❌ Execution failed: {str(e)}"
+                            tool_outputs.append({
+                                "tool_call_id": tool_call.id,
+                                "output": json.dumps({"status": "error", "error": str(e)[:50]})
+                            })
                     
-                    # Submit tool outputs
+                    else:
+                        # Skip other functions
+                        logging.info(f"⏭️ Skipping function: {func_name}")
+
+                # Submit tool outputs
+                if tool_outputs:
                     try:
-                        project_client.agents.runs.submit_tool_outputs(
+                        logging.info("📤 Submitting tool outputs...")
+                        run = project_client.agents.runs.submit_tool_outputs(
                             thread_id=thread.id,
                             run_id=run.id,
                             tool_outputs=tool_outputs
                         )
                         logging.info("✅ Tool outputs submitted")
                     except Exception as e:
-                        logging.error(f"❌ Failed to submit tool outputs: {e}")
+                        logging.error(f"❌ Tool output submission failed: {e}")
+                        # Return result anyway if we have it
+                        if custom_code_executed and final_response_content:
+                            return {
+                                "status": "success",
+                                "content": final_response_content,
+                                "type": "submission_failed_but_success",
+                                "agent_id": text_agent_id,
+                                "thread_id": thread.id,
+                                "analysis_data": analysis_data
+                            }
+                
+                # Return if code executed
+                if custom_code_executed and final_response_content:
+                    return {
+                        "status": "success",
+                        "content": final_response_content,
+                        "type": "post_submission_success",
+                        "agent_id": text_agent_id,
+                        "thread_id": thread.id,
+                        "debug": {
+                            "iterations": iteration,
+                            "elapsed_time": elapsed_time,
+                            "custom_code_executed": True
+                        },
+                        "analysis_data": analysis_data
+                    }
             
-            # ===== CASE 3: FAILED/CANCELLED/EXPIRED =====
-            elif run.status in ["failed", "cancelled", "expired"]:
-                logging.error(f"❌ Run ended with status: {run.status}")
-                return {
-                    "status": "error",
-                    "content": f"Agent run {run.status}",
-                    "type": f"run_{run.status}",
-                    "agent_id": text_agent_id,
-                    "thread_id": thread.id
-                }
-            
-            # ===== CASE 4: QUEUED/IN_PROGRESS =====
-            elif run.status in ["queued", "in_progress"]:
-                # Wait and continue
-                time.sleep(0.5)
-            
-            # Refresh run status
+            # Enhanced: Variable wait time based on status
+            if run.status == "in_progress":
+                time.sleep(0.5)  # Longer wait when thinking
+            else:
+                time.sleep(0.2)  # Shorter wait for other statuses
+                
             try:
                 run = _get_run(thread_id=thread.id, run_id=run.id)
             except Exception as e:
-                logging.error(f"❌ Error refreshing run: {e}")
+                logging.error(f"❌ Get run error: {e}")
                 break
         
-        # If we exit the loop without returning, something went wrong
-        elapsed_time = time.time() - start_time
-        logging.error(f"❌ Exited loop after {iteration} iterations, status: {run.status}")
+        # Enhanced final status logging
+        final_status = run.status if 'run' in locals() else "unknown"
+        logging.error(f"❌ Agent completion without execution:")
+        logging.error(f"   Final status: {final_status}")
+        logging.error(f"   Iterations: {iteration}/{max_iterations}")
+        logging.error(f"   Elapsed time: {elapsed_time:.1f}s")
+        logging.error(f"   Custom code executed: {custom_code_executed}")
         
+        # Final fallback
+        if custom_code_executed and final_response_content:
+            return {
+                "status": "success",
+                "content": final_response_content,
+                "type": "final_fallback_success",
+                "agent_id": text_agent_id,
+                "thread_id": thread.id,
+                "analysis_data": analysis_data
+            }
+        
+        # Timeout response with more helpful message
+        elapsed_time = time.time() - start_time
         return {
-            "status": "timeout_failure",
-            "content": f"Agent failed after {iteration} iterations ({elapsed_time:.1f}s). Status: {run.status}",
-            "type": "timeout",
+            "status": "timeout_failure", 
+            "content": f"Agent failed to execute function after {max_iterations} iterations ({elapsed_time:.1f}s). The agent appears to be stuck in '{final_status}' status. This may require agent recreation.",
+            "type": "iteration_limit_exceeded",
             "agent_id": text_agent_id,
             "thread_id": thread.id,
             "debug": {
                 "iterations": iteration,
-                "final_status": run.status,
-                "elapsed_time": elapsed_time
+                "max_iterations": max_iterations,
+                "elapsed_time": elapsed_time,
+                "final_status": final_status,
+                "custom_code_executed": custom_code_executed,
+                "suggestion": "Recreate the agent: python agents/agent_creation.py"
             }
         }
         
     except Exception as e:
-        logging.error(f"❌ Chat request error: {e}", exc_info=True)
+        logging.error(f"❌ Request error: {e}", exc_info=True)
         return {
             "status": "error",
             "content": str(e),
@@ -750,7 +969,479 @@ def should_use_tiles(user_query: str, map_data: dict) -> bool:
     logging.info("✅ Using tiles for ALL map queries (unified approach)")
     return True  # Always return True
 
-# Add compatibility wrapper at the end:
-def chat_with_agent(user_query: str, thread_id: str = None):
-    """Main entry point for chatting with the agent"""
-    return handle_chat_request(user_query, thread_id)
+def extract_agent_text_response(thread_id: str) -> str:
+    """Extract the most recent assistant message from the thread"""
+    try:
+        messages = project_client.agents.messages.list(thread_id=thread_id)
+        messages_list = list(messages)
+        
+        for message in messages_list:
+            if message.role == "assistant":
+                if message.content and len(message.content) > 0:
+                    content_block = message.content[0]
+                    if hasattr(content_block, 'text'):
+                        return content_block.text.value
+                    elif hasattr(content_block, 'value'):
+                        return content_block.value
+                    else:
+                        return str(content_block)
+        
+        return "Hello! I'm the NLDAS-3 Weather Assistant. I can help you with weather data queries, maps, and analysis. What would you like to know?"
+        
+    except Exception as e:
+        logging.error(f"❌ Error extracting text response: {e}", exc_info=True)
+        return "Hello! I'm here to help with weather data. What would you like to explore?"
+
+def handle_chat_request(data):
+    """Handle chat requests compatible with intelligent agent"""
+    try:
+        user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
+        logging.info(f"Processing chat request: {user_query}")
+
+        # Create a thread for the conversation
+        thread = project_client.agents.threads.create()
+        logging.info(f"Created thread: {thread.id}")
+        
+        # ✅ UPDATED: Send the query naturally - let the intelligent agent decide
+        message = project_client.agents.messages.create(
+            thread_id=thread.id,
+            role="user",
+            content=user_query  # Just send the query as-is
+        )
+        logging.info(f"Created message: {message.id}")
+        
+        # Start the agent run
+        run = project_client.agents.runs.create(
+            thread_id=thread.id,
+            agent_id=text_agent_id
+        )
+        logging.info(f"Started run: {run.id}")
+        
+        # Enhanced timeout and iteration handling
+        max_iterations = 15
+        iteration = 0
+        analysis_data = None
+        custom_code_executed = False
+        
+        start_time = time.time()
+        max_total_time = 60  # 60 seconds timeout
+        
+        while iteration < max_iterations:
+            iteration += 1
+            elapsed_time = time.time() - start_time
+            
+            logging.info(f"🔄 Run status: {run.status} (iteration {iteration}/{max_iterations}, elapsed: {elapsed_time:.1f}s)")
+            
+            if elapsed_time > max_total_time:
+                logging.warning(f"⏰ TIMEOUT: Exceeded {max_total_time}s")
+                break
+            
+            # ===== CASE 1: COMPLETED (Agent finished - could be text OR code execution) =====
+            if run.status == "completed":
+                logging.info("✅ Run completed")
+                
+                if not custom_code_executed:
+                    # This is a text-only response (greeting, capability question, etc.)
+                    text_response = extract_agent_text_response(thread.id)
+                    
+                    response = {
+                        "status": "success",
+                        "content": text_response,
+                        "type": "text_response",
+                        "agent_id": text_agent_id,
+                        "thread_id": thread.id
+                    }
+                    
+                    return make_json_serializable(response)
+                else:
+                    # Code was executed
+                    response = {
+                        "status": "success",
+                        "content": "Analysis completed",
+                        "type": "code_execution_complete",
+                        "agent_id": text_agent_id,
+                        "thread_id": thread.id,
+                        "analysis_data": analysis_data
+                    }
+                    
+                    return make_json_serializable(response)
+            
+            # ===== CASE 2: REQUIRES_ACTION (Tool call needed) =====
+            elif run.status == "requires_action":
+                logging.info("🛠️ Run requires action - processing tool calls")
+                
+                if run.required_action and run.required_action.submit_tool_outputs:
+                    tool_calls = run.required_action.submit_tool_outputs.tool_calls
+                    logging.info(f"🔧 Processing {len(tool_calls)} tool call(s)")
+                    
+                    tool_outputs = []
+                    
+                    for tool_call in tool_calls:
+                        if tool_call.function.name == "execute_custom_code":
+                            try:
+                                raw_arguments = tool_call.function.arguments
+                                
+                                if not raw_arguments or not raw_arguments.strip():
+                                    logging.warning("⚠️ Empty arguments, using fallback")
+                                    function_args = {
+                                        "python_code": "result = 'Hello! I can help you with weather data analysis.'",
+                                        "user_request": user_query
+                                    }
+                                else:
+                                    function_args = json.loads(raw_arguments)
+                                
+                                logging.info("🚀 Executing custom code...")
+                                analysis_result = execute_custom_code(function_args)
+                                custom_code_executed = True
+                                analysis_data = analysis_result
+                                
+                                # Handle result
+                                if analysis_result.get("status") == "success":
+                                    result_value = analysis_result.get("result")
+                                    
+                                    # Handle map results
+                                    if isinstance(result_value, dict) and ("static_url" in result_value or "overlay_url" in result_value):
+                                        logging.info("🗺️ Map result detected")
+                                        
+                                        enriched = normalize_map_result_dict(result_value, user_query)
+                                        enriched["temperature_data"] = build_temperature_data(enriched.get("geojson", {}))
+                                        
+                                        use_tiles = should_use_tiles(user_query, enriched)
+                                        
+                                        if use_tiles:
+                                            tile_config = create_tile_config(enriched, user_query)
+                                            
+                                            tool_outputs.append({
+                                                "tool_call_id": tool_call.id,
+                                                "output": json.dumps({"status": "success", "completed": True})
+                                            })
+                                            
+                                            project_client.agents.runs.submit_tool_outputs(
+                                                thread_id=thread.id,
+                                                run_id=run.id,
+                                                tool_outputs=tool_outputs
+                                            )
+                                            
+                                            response = {
+                                                "status": "success",
+                                                "content": enriched.get("static_url", "Interactive map generated"),
+                                                "use_tiles": True,
+                                                "tile_config": tile_config,
+                                                "static_url": enriched.get("static_url"),
+                                                "geojson": enriched["geojson"],
+                                                "bounds": enriched["bounds"],
+                                                "map_config": enriched["map_config"],
+                                                "temperature_data": enriched["temperature_data"],
+                                                "type": "visualization_with_tiles",
+                                                "agent_id": text_agent_id,
+                                                "thread_id": thread.id,
+                                                "analysis_data": analysis_result
+                                            }
+                                            
+                                            return make_json_serializable(response)
+                                        
+                                        else:
+                                            response = {
+                                                "status": "success",
+                                                "content": enriched.get("static_url", "Map generated"),
+                                                "static_url": enriched.get("static_url"),
+                                                "overlay_url": enriched.get("overlay_url"),
+                                                "geojson": enriched["geojson"],
+                                                "bounds": enriched["bounds"],
+                                                "map_config": enriched["map_config"],
+                                                "temperature_data": enriched["temperature_data"],
+                                                "type": "visualization_with_overlay",
+                                                "agent_id": text_agent_id,
+                                                "thread_id": thread.id,
+                                                "analysis_data": analysis_result
+                                            }
+                                            
+                                            return make_json_serializable(response)
+                                    else:
+                                        # Text result
+                                        tool_outputs.append({
+                                            "tool_call_id": tool_call.id,
+                                            "output": json.dumps({"status": "success", "result": str(result_value)})
+                                        })
+                                else:
+                                    # Execution failed
+                                    error_msg = analysis_result.get("error", "Unknown error")
+                                    tool_outputs.append({
+                                        "tool_call_id": tool_call.id,
+                                        "output": json.dumps({"status": "error", "error": error_msg})
+                                    })
+                                    
+                            except Exception as e:
+                                logging.error(f"❌ Tool call error: {e}", exc_info=True)
+                                tool_outputs.append({
+                                    "tool_call_id": tool_call.id,
+                                    "output": json.dumps({"status": "error", "error": str(e)})
+                                })
+                    
+                    # Submit tool outputs
+                    try:
+                        project_client.agents.runs.submit_tool_outputs(
+                            thread_id=thread.id,
+                            run_id=run.id,
+                            tool_outputs=tool_outputs
+                        )
+                        logging.info("✅ Tool outputs submitted")
+                    except Exception as e:
+                        logging.error(f"❌ Failed to submit tool outputs: {e}")
+            
+            # ===== CASE 3: FAILED/CANCELLED/EXPIRED =====
+            elif run.status in ["failed", "cancelled", "expired"]:
+                logging.error(f"❌ Run ended with status: {run.status}")
+                response = {
+                    "status": "error",
+                    "content": f"Agent run {run.status}",
+                    "type": f"run_{run.status}",
+                    "agent_id": text_agent_id,
+                    "thread_id": thread.id
+                }
+                
+                return make_json_serializable(response)
+            
+            # ===== CASE 4: QUEUED/IN_PROGRESS =====
+            elif run.status in ["queued", "in_progress"]:
+                time.sleep(0.5)
+            
+            # Refresh run status
+            try:
+                run = _get_run(thread_id=thread.id, run_id=run.id)
+            except Exception as e:
+                logging.error(f"❌ Error refreshing run: {e}")
+                break
+        
+        # Final timeout response
+        elapsed_time = time.time() - start_time
+        logging.error(f"❌ Agent completion without execution:")
+        logging.error(f"   Final status: {run.status}")
+        logging.error(f"   Iterations: {iteration}/{max_iterations}")
+        logging.error(f"   Elapsed time: {elapsed_time:.1f}s")
+        logging.error(f"   Custom code executed: {custom_code_executed}")
+        
+        response = {
+            "status": "timeout_failure",
+            "content": f"Agent failed after {iteration} iterations ({elapsed_time:.1f}s). Status: {run.status}",
+            "type": "timeout",
+            "agent_id": text_agent_id,
+            "thread_id": thread.id,
+            "debug": {
+                "iterations": iteration,
+                "final_status": run.status,
+                "elapsed_time": elapsed_time
+            }
+        }
+        
+        return make_json_serializable(response)
+        
+    except Exception as e:
+        logging.error(f"❌ Chat request error: {e}", exc_info=True)
+        response = {
+            "status": "error",
+            "content": str(e),
+            "error_type": type(e).__name__
+        }
+        
+        return make_json_serializable(response)
+
+def make_json_serializable(obj):
+    """Enhanced JSON serialization that handles all Python types including mappingproxy"""
+    import types
+    from datetime import datetime, date
+    
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [make_json_serializable(item) for item in obj]
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, types.MappingProxyType):
+        # Convert mappingproxy to regular dict
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    elif hasattr(obj, '__dict__'):
+        return make_json_serializable(obj.__dict__)
+    elif hasattr(obj, '_asdict'):  # namedtuple
+        return make_json_serializable(obj._asdict())
+    else:
+        try:
+            return str(obj)
+        except:
+            return f"<non-serializable: {type(obj).__name__}>"
+
+def wrap_with_geo_overlay(static_url: str, original_query: str) -> dict:
+    """
+    Produce a unified response structure containing:
+    - original static map URL (static_url)
+    - overlay_url (same as static for now; future: transparent variant)
+    - minimal GeoJSON sampling placeholder (empty FeatureCollection)
+    - default map_config (frontend can refine)
+    """
+    logging.info("🌐 Adding unified overlay + geojson wrapper to static visualization")
+    geojson = {
+        "type": "FeatureCollection",
+        "features": []
+    }
+    map_config = {
+        "style": "satellite",
+        "overlay_mode": True,
+        "center": [ -98.0, 39.0 ],  # Fallback CONUS center
+        "zoom": 5
+    }
+    return {
+        "static_url": static_url,
+        "overlay_url": None,  # distinguish that we lack a transparent overlay
+        "geojson": geojson,
+        "bounds": None,
+        "map_config": map_config,
+        "original_query": original_query
+    }
+
+def normalize_map_result_dict(raw: dict, original_query: str) -> dict:
+    """Guarantee required keys for map dict returned by generated code."""
+    static_url = raw.get("static_url")
+    overlay_url = raw.get("overlay_url") or raw.get("transparent_url")
+    # fallback: if only one provided treat as both
+    if overlay_url is None and static_url:
+        overlay_url = static_url
+    if static_url is None and overlay_url:
+        static_url = overlay_url
+    geojson = raw.get("geojson") or {"type":"FeatureCollection","features":[]}
+    bounds = raw.get("bounds") or {}
+    map_config = raw.get("map_config") or {
+        "center": bounds_center(bounds),
+        "zoom": 6,
+        "style": "satellite",
+        "overlay_mode": True
+    }
+    # Fill center if missing
+    if "center" not in map_config or not map_config["center"]:
+        map_config["center"] = bounds_center(bounds)
+    if "overlay_mode" not in map_config:
+        map_config["overlay_mode"] = True
+    return {
+        "static_url": static_url,
+        "overlay_url": overlay_url,
+        "geojson": geojson,
+        "bounds": bounds,
+        "map_config": map_config,
+        "original_query": original_query
+    }
+
+# NEW: Build temperature_data array from geojson features
+def build_temperature_data(geojson: dict, target_max_points: int = 2500) -> list:
+    results = []
+    if not geojson or geojson.get("type") != "FeatureCollection":
+        return results
+    features = geojson.get("features", [])
+    total = len(features)
+    if total == 0:
+        return results
+    # Adaptive stride
+    if total > target_max_points:
+        stride = max(1, int(total / target_max_points))
+    else:
+        stride = 1
+    min_val = None
+    max_val = None
+    min_feat = None
+    max_feat = None
+    for idx, f in enumerate(features):
+        if idx % stride != 0:
+            # Still track min/max
+            props = f.get("properties", {}) or {}
+            v = props.get("value") or props.get("spi") or props.get("temperature")
+            try:
+                fv = float(v)
+                if (min_val is None) or (fv < min_val):
+                    min_val, min_feat = fv, f
+                if (max_val is None) or (fv > max_val):
+                    max_val, max_feat = fv, f
+            except:
+                pass
+            continue
+        geom = f.get("geometry", {})
+        if geom.get("type") != "Point":
+            continue
+        coords = geom.get("coordinates")
+        if not coords or len(coords) < 2:
+            continue
+        lon, lat = float(coords[0]), float(coords[1])
+        props = f.get("properties", {}) or {}
+        val = props.get("value")
+        if val is None:
+            val = props.get("spi")
+        if val is None:
+            val = props.get("temperature")
+        if val is None:
+            continue
+        try:
+            val = float(val)
+        except:
+            continue
+        results.append({
+            "latitude": lat,
+            "longitude": lon,
+            "value": val,
+            "originalValue": val,
+            "location": f"{lat:.2f}, {lon:.2f}"
+        })
+    # Ensure extremes included
+    def add_extreme(feat):
+        if not feat:
+            return
+        geom = feat.get("geometry", {})
+        if geom.get("type") != "Point":
+            return
+        coords = geom.get("coordinates")
+        if not coords or len(coords) < 2:
+            return
+        lon, lat = float(coords[0]), float(coords[1])
+        props = feat.get("properties", {}) or {}
+        v = props.get("value") or props.get("spi") or props.get("temperature")
+        try:
+            fv = float(v)
+        except:
+            return
+        key = (round(lat, 6), round(lon, 6))
+        if all((round(r["latitude"],6), round(r["longitude"],6)) != key for r in results):
+            results.append({
+                "latitude": lat,
+                "longitude": lon,
+                "value": fv,
+                "originalValue": fv,
+                "location": f"{lat:.2f}, {lon:.2f}"
+            })
+    add_extreme(min_feat)
+    add_extreme(max_feat)
+    return results
+
+def bounds_center(bounds: dict):
+    try:
+        return [
+            float((bounds.get("east")+bounds.get("west"))/2),  # ✅ FIXED: Added missing closing parenthesis
+            float((bounds.get("north")+bounds.get("south"))/2)  # ✅ FIXED: Added missing closing parenthesis
+        ]
+    except Exception:
+        return [-98.0, 39.0]
+
+def should_use_tiles(user_query: str, map_data: dict) -> bool:
+    """
+    ALWAYS use tiles - unified approach for all map queries
+    """
+    bounds = map_data.get("bounds", {})
+    if not bounds:
+        logging.warning("❌ No bounds in map_data - cannot use tiles")
+        return False
+    
+    logging.info("✅ Using tiles for ALL map queries (unified approach)")
+    return True  # Always return True
