@@ -6,6 +6,8 @@ import json
 import logging
 import time
 from .dynamic_code_generator import execute_custom_code
+import time
+import json  # Also needed for logging the timing breakdown
 
 # Load agent info (keep existing code)
 agent_info_path = os.path.join(os.path.dirname(__file__), "../agent_info.json")
@@ -46,17 +48,26 @@ def _get_run(thread_id: str, run_id: str):
 
 def handle_chat_request(data):
     """
-    ULTRA-DIRECT: Immediate function execution with Azure Maps detection
+    ULTRA-DIRECT: Immediate function execution with Azure Maps detection + Performance Timing
     """
+    start_total = time.time()
+    times = {}
+    
     try:
+        # Validation step
+        t1 = time.time()
         user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
         logging.info(f"Processing chat request: {user_query}")
+        times['validation'] = time.time() - t1
 
-        # Create a thread for the conversation
+        # Thread creation
+        t2 = time.time()
         thread = project_client.agents.threads.create()
         logging.info(f"Created thread: {thread.id}")
+        times['thread_creation'] = time.time() - t2
         
-        # ULTRA-DIRECT: Force immediate function call
+        # Message preparation
+        t3 = time.time()
         enhanced_query = f"""IMMEDIATE ACTION REQUIRED: {user_query}
 
 You MUST call execute_custom_code function RIGHT NOW. No thinking, no explanations.
@@ -75,23 +86,34 @@ CALL execute_custom_code NOW!"""
             content=enhanced_query
         )
         logging.info(f"Created message: {message.id}")
+        times['message_creation'] = time.time() - t3
         
-        # Start the agent run
+        # Run creation
+        t4 = time.time()
         run = project_client.agents.runs.create(
             thread_id=thread.id,
             agent_id=text_agent_id
         )
         logging.info(f"Started run: {run.id}")
+        times['run_creation'] = time.time() - t4
         
-        # NEW: Detect analysis queries and handle them directly - FIXED RETURN FORMAT
+        # Analysis detection
+        t5 = time.time()
         analysis_keywords = ['most significant', 'most extreme', 'hottest', 'coldest', 'warmest', 'wettest', 'driest', 'highest', 'lowest', 'top', 'worst', 'best', 'find', 'where are']
         is_analysis_query = any(phrase in user_query.lower() for phrase in analysis_keywords)
+        times['analysis_detection'] = time.time() - t5
         
         if is_analysis_query:
+            # Direct analysis timing
+            t6 = time.time()
             logging.info(f"🔍 Detected analysis query - using direct analysis function")
             try:
                 from .dynamic_code_generator import analyze_extreme_regions
                 analysis_result = analyze_extreme_regions(user_query)
+                times['direct_analysis'] = time.time() - t6
+                times['total'] = time.time() - start_total
+                
+                logging.info(f"⏱️  ANALYSIS TIMING: {json.dumps(times, indent=2)}")
                 
                 if analysis_result.get("status") == "success":
                     result_value = analysis_result.get("result")
@@ -112,31 +134,35 @@ CALL execute_custom_code NOW!"""
                         # NEW: Add temperature_data for consistency with other responses
                         "temperature_data": build_temperature_data(result_value.get("geojson", {})),
                         "agent_id": text_agent_id,
-                        "thread_id": thread.id
+                        "thread_id": thread.id,
+                        "timing_breakdown": times
                     }
                 else:
                     return {
                         "status": "error",
                         "content": f"Analysis failed: {analysis_result.get('error', 'Unknown error')}",
-                        "type": "analysis_error"
+                        "type": "analysis_error",
+                        "timing_breakdown": times
                     }
                     
             except Exception as analysis_error:
+                times['direct_analysis_failed'] = time.time() - t6
                 logging.error(f"❌ Direct analysis failed: {analysis_error}")
                 # Fall back to agent-based processing
                 logging.info("🔄 Falling back to agent-based analysis")
 
-        # ENHANCED: Better timeout strategy with status-specific handling
-        max_iterations = 15  # Slight increase, but not the main fix
+        # Execution loop timing
+        t7 = time.time()
+        max_iterations = 15
         iteration = 0
         analysis_data = None
         custom_code_executed = False
         final_response_content = None
-        in_progress_count = 0  # NEW: Track how long we're stuck in "in_progress"
+        in_progress_count = 0
         
         start_time = time.time()
         max_total_time = 120  # Increased to 2 minutes
-        max_in_progress_time = 15  # NEW: Max time to stay in "in_progress"
+        max_in_progress_time = 8  # NEW: Max time to stay in "in_progress"
         last_status_change = start_time
         
         while run.status in ["queued", "in_progress", "requires_action"] and iteration < max_iterations:
@@ -297,13 +323,26 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                 result_value = analysis_result.get("result", "No result")
 
                                 # UPDATED: Full map dict (dual URLs)
-                                if isinstance(result_value, dict) and ("overlay_url" in result_value or "static_url"):
+                                if isinstance(result_value, dict) and ("overlay_url" in result_value or "static_url" in result_value):
                                     enriched = normalize_map_result_dict(result_value, user_query)
                                     enriched["temperature_data"] = build_temperature_data(enriched.get("geojson"))
                                     tool_outputs.append({
                                         "tool_call_id": tool_call.id,
                                         "output": json.dumps({"status": "success", "completed": True})
                                     })
+                                    times['execution_loop'] = time.time() - t7
+                                    times['total'] = time.time() - start_total
+                                    
+                                    # Log timing breakdown
+                                    logging.info(f"⏱️  COMPLETE TIMING BREAKDOWN:")
+                                    logging.info(f"   📋 Validation: {times.get('validation', 0):.3f}s")
+                                    logging.info(f"   🧵 Thread creation: {times.get('thread_creation', 0):.3f}s")
+                                    logging.info(f"   💬 Message creation: {times.get('message_creation', 0):.3f}s")
+                                    logging.info(f"   🚀 Run creation: {times.get('run_creation', 0):.3f}s")
+                                    logging.info(f"   🔍 Analysis detection: {times.get('analysis_detection', 0):.3f}s")
+                                    logging.info(f"   ⚙️  Execution loop: {times.get('execution_loop', 0):.3f}s")
+                                    logging.info(f"   🎯 TOTAL TIME: {times['total']:.3f}s")
+                                    
                                     return {
                                         "status": "success",
                                         "content": enriched.get("static_url") or enriched["overlay_url"],
@@ -312,11 +351,12 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         "geojson": enriched["geojson"],
                                         "bounds": enriched["bounds"],
                                         "map_config": enriched["map_config"],
-                                        "temperature_data": enriched["temperature_data"],  # NEW
+                                        "temperature_data": enriched["temperature_data"],
                                         "type": "visualization_with_overlay",
                                         "agent_id": text_agent_id,
                                         "thread_id": thread.id,
-                                        "analysis_data": analysis_result
+                                        "analysis_data": analysis_result,
+                                        "timing_breakdown": times
                                     }
 
                                 # Legacy single URL path
@@ -327,6 +367,19 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         "tool_call_id": tool_call.id,
                                         "output": json.dumps({"status": "success", "completed": True})
                                     })
+                                    times['execution_loop'] = time.time() - t7
+                                    times['total'] = time.time() - start_total
+                                    
+                                    # Log timing breakdown
+                                    logging.info(f"⏱️  COMPLETE TIMING BREAKDOWN:")
+                                    logging.info(f"   📋 Validation: {times.get('validation', 0):.3f}s")
+                                    logging.info(f"   🧵 Thread creation: {times.get('thread_creation', 0):.3f}s")
+                                    logging.info(f"   💬 Message creation: {times.get('message_creation', 0):.3f}s")
+                                    logging.info(f"   🚀 Run creation: {times.get('run_creation', 0):.3f}s")
+                                    logging.info(f"   🔍 Analysis detection: {times.get('analysis_detection', 0):.3f}s")
+                                    logging.info(f"   ⚙️  Execution loop: {times.get('execution_loop', 0):.3f}s")
+                                    logging.info(f"   🎯 TOTAL TIME: {times['total']:.3f}s")
+                                    
                                     return {
                                         "status": "success",
                                         "content": enriched["static_url"],
@@ -335,11 +388,12 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         "geojson": enriched["geojson"],
                                         "bounds": enriched.get("bounds"),
                                         "map_config": enriched["map_config"],
-                                        "temperature_data": enriched["temperature_data"],  # NEW
+                                        "temperature_data": enriched["temperature_data"],
                                         "type": "visualization_with_overlay",
                                         "agent_id": text_agent_id,
                                         "thread_id": thread.id,
-                                        "analysis_data": analysis_result
+                                        "analysis_data": analysis_result,
+                                        "timing_breakdown": times
                                     }
 
                                 # IMPROVED: Clean up the response format - remove icons and make it conversational
@@ -379,6 +433,20 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                     "output": json.dumps({"status": "success", "completed": True})
                                 })
                                 
+                                # Calculate final timings
+                                times['execution_loop'] = time.time() - t7
+                                times['total'] = time.time() - start_total
+                                
+                                # Log the complete timing breakdown
+                                logging.info(f"⏱️  COMPLETE TIMING BREAKDOWN:")
+                                logging.info(f"   📋 Validation: {times.get('validation', 0):.3f}s")
+                                logging.info(f"   🧵 Thread creation: {times.get('thread_creation', 0):.3f}s")
+                                logging.info(f"   💬 Message creation: {times.get('message_creation', 0):.3f}s")
+                                logging.info(f"   🚀 Run creation: {times.get('run_creation', 0):.3f}s")
+                                logging.info(f"   🔍 Analysis detection: {times.get('analysis_detection', 0):.3f}s")
+                                logging.info(f"   ⚙️  Execution loop: {times.get('execution_loop', 0):.3f}s")
+                                logging.info(f"   🎯 TOTAL TIME: {times['total']:.3f}s")
+                                
                                 # IMMEDIATE RETURN
                                 return {
                                     "status": "success",
@@ -391,7 +459,8 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                                         "elapsed_time": elapsed_time,
                                         "custom_code_executed": True
                                     },
-                                    "analysis_data": analysis_result
+                                    "analysis_data": analysis_result,
+                                    "timing_breakdown": times
                                 }
                                 
                             else:
@@ -428,17 +497,33 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                         logging.error(f"❌ Tool output submission failed: {e}")
                         # Return result anyway if we have it
                         if custom_code_executed and final_response_content:
+                            times['execution_loop'] = time.time() - t7
+                            times['total'] = time.time() - start_total
                             return {
                                 "status": "success",
                                 "content": final_response_content,
                                 "type": "submission_failed_but_success",
                                 "agent_id": text_agent_id,
                                 "thread_id": thread.id,
-                                "analysis_data": analysis_data
+                                "analysis_data": analysis_data,
+                                "timing_breakdown": times
                             }
                 
                 # Return if code executed
                 if custom_code_executed and final_response_content:
+                    times['execution_loop'] = time.time() - t7
+                    times['total'] = time.time() - start_total
+                    
+                    # Log timing breakdown
+                    logging.info(f"⏱️  COMPLETE TIMING BREAKDOWN:")
+                    logging.info(f"   📋 Validation: {times.get('validation', 0):.3f}s")
+                    logging.info(f"   🧵 Thread creation: {times.get('thread_creation', 0):.3f}s")
+                    logging.info(f"   💬 Message creation: {times.get('message_creation', 0):.3f}s")
+                    logging.info(f"   🚀 Run creation: {times.get('run_creation', 0):.3f}s")
+                    logging.info(f"   🔍 Analysis detection: {times.get('analysis_detection', 0):.3f}s")
+                    logging.info(f"   ⚙️  Execution loop: {times.get('execution_loop', 0):.3f}s")
+                    logging.info(f"   🎯 TOTAL TIME: {times['total']:.3f}s")
+                    
                     return {
                         "status": "success",
                         "content": final_response_content,
@@ -450,14 +535,15 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                             "elapsed_time": elapsed_time,
                             "custom_code_executed": True
                         },
-                        "analysis_data": analysis_data
+                        "analysis_data": analysis_data,
+                        "timing_breakdown": times
                     }
             
             # Enhanced: Variable wait time based on status
             if run.status == "in_progress":
-                time.sleep(0.5)  # Longer wait when thinking
+                time.sleep(0.1)  # Longer wait when thinking
             else:
-                time.sleep(0.2)  # Shorter wait for other statuses
+                time.sleep(0.05)  # Shorter wait for other statuses
                 
             try:
                 run = _get_run(thread_id=thread.id, run_id=run.id)
@@ -466,12 +552,18 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                 break
         
         # Enhanced final status logging
+        times['execution_loop'] = time.time() - t7
+        times['total'] = time.time() - start_total
+        
         final_status = run.status if 'run' in locals() else "unknown"
         logging.error(f"❌ Agent completion without execution:")
         logging.error(f"   Final status: {final_status}")
         logging.error(f"   Iterations: {iteration}/{max_iterations}")
         logging.error(f"   Elapsed time: {elapsed_time:.1f}s")
         logging.error(f"   Custom code executed: {custom_code_executed}")
+        
+        # Log timing breakdown even on failure
+        logging.info(f"⏱️  ERROR TIMING: {json.dumps(times, indent=2)}")
         
         # Final fallback
         if custom_code_executed and final_response_content:
@@ -481,7 +573,8 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                 "type": "final_fallback_success",
                 "agent_id": text_agent_id,
                 "thread_id": thread.id,
-                "analysis_data": analysis_data
+                "analysis_data": analysis_data,
+                "timing_breakdown": times
             }
         
         # Timeout response with more helpful message
@@ -499,17 +592,20 @@ result = f'The temperature is {temp_c:.1f}°C'""",
                 "final_status": final_status,
                 "custom_code_executed": custom_code_executed,
                 "suggestion": "Recreate the agent: python agents/agent_creation.py"
-            }
+            },
+            "timing_breakdown": times
         }
         
     except Exception as e:
+        times['total'] = time.time() - start_total
         logging.error(f"❌ Request error: {e}", exc_info=True)
+        logging.info(f"⏱️  ERROR TIMING: {json.dumps(times, indent=2)}")
         return {
             "status": "error",
             "content": str(e),
-            "error_type": type(e).__name__
+            "error_type": type(e).__name__,
+            "timing_breakdown": times
         }
-
 def wrap_with_geo_overlay(static_url: str, original_query: str) -> dict:
     """
     Produce a unified response structure containing:

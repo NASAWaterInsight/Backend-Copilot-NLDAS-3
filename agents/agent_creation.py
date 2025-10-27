@@ -90,6 +90,14 @@ instructions = """MANDATORY: Call execute_custom_code immediately.
 🚨 CRITICAL: Use ccrs.PlateCarree() object, NEVER use 'platecarree' string for projections.
 
 🚨 CRITICAL: NEVER override ACCOUNT_NAME or account_key variables - they are pre-configured.
+⚡ SPEED OPTIMIZATION: For common US states and regions, use standard geographic boundaries WITHOUT extensive calculation. Be decisive about coordinates - don't spend time researching exact boundaries.
+
+Example patterns:
+- "Alaska temperature" → Quickly use approximate Alaska bounds (58-72°N, 180-120°W) 
+- "Florida weather" → Quickly use approximate Florida bounds (24-31°N, 88-80°W)
+- "California data" → Quickly use approximate California bounds (32-42°N, 124-114°W)
+
+The goal is SPEED - use reasonable approximations rather than perfect boundaries.
 
 CRITICAL: ONLY use these exact function names (no others exist):
 - load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
@@ -108,6 +116,59 @@ NLDAS Daily Variables (use load_specific_date_kerchunk):
 - Pressure = 'PSurf'
 - Solar radiation = 'SWdown'
 - Longwave radiation = 'LWdown'
+
+**CRITICAL: Precipitation Data Handling**
+    For precipitation queries, use these EXACT patterns based on the specific terminology:
+
+    **For "total", "precipitation", or "accumulated" precipitation:**
+    ```python
+    # TOTAL/ACCUMULATED precipitation - sum over all grid cells AND time
+    data = ds['Rainf'].sel(lat=slice(...), lon=slice(...))
+    daily_totals = data.sum(dim='time')  # Sum 24 hourly values → daily total per grid cell
+    total_precipitation = daily_totals.sum()  # Sum all grid cells → total volume
+    ```
+
+    **For "average precipitation" (must contain word "average"):**
+    ```python
+    # AVERAGE precipitation - sum over time first, then spatial average
+    data = ds['Rainf'].sel(lat=slice(...), lon=slice(...))
+    daily_totals = data.sum(dim='time')  # Sum 24 hourly values → daily total per grid cell
+    average_precipitation = daily_totals.mean()  # Spatial average of daily totals
+    ```
+
+    **Query interpretation examples:**
+    - "What is the total precipitation in Florida" → Use `.sum(dim='time').sum()` (total volume)
+    - "What is the precipitation in Florida" → Use `.sum(dim='time').sum()` (total volume)
+    - "What is the accumulated precipitation in Florida" → Use `.sum(dim='time').sum()` (total volume)
+    - "What is the average precipitation in Florida" → Use `.sum(dim='time').mean()` (spatial average)
+    - "What is the daily precipitation in Florida" → Use `.sum(dim='time').mean()` (spatial average)
+
+    **Never use `.mean()` alone for precipitation - it gives hourly rates, not daily totals.**
+
+    **For other variables (temperature, humidity):**
+    ```python
+    data = ds['Variable'].sel(lat=slice(...), lon=slice(...))
+    result = data.mean()  # This is fine for non-precipitation variables
+    ```
+
+    **STEP 1: Check if I have complete information**
+    Required: Location + Time Period + Variable
+    - Missing any? → Ask user to specify
+    - Have all? → Call execute_custom_code
+
+    **STEP 2: Generate proper code based on precipitation terminology**
+    - "total/precipitation/accumulated": `.sum(dim='time').sum()` (total volume)
+    - "average precipitation": `.sum(dim='time').mean()` (spatial average)
+    - Other variables: `.mean()`
+
+    Available data: 2023 (daily), SPI: 2003-2023 (monthly)
+
+    **Examples of asking for missing information:**
+    - If missing time: "Please specify a time period for [variable] data. Available: [range]"
+    - If missing location: "Please specify a location (state, city, or coordinates)"
+    - If unclear variable: "Please clarify which weather variable you're interested in"
+
+    **Only call execute_custom_code when you have ALL required information.**
 
 SPI/Drought Monthly Variables (use load_specific_month_spi_kerchunk):
 - Drought = 'SPI3' (3-month Standardized Precipitation Index)
@@ -130,11 +191,58 @@ COLOR CONSISTENCY RULE:
 - Then use these vmin, vmax in the overlay pcolormesh: ax2.pcolormesh(..., vmin=vmin, vmax=vmax, cmap=<same_cmap>)
 - Never recompute or expand the range for the overlay; no buffers.
 
+🚨 CRITICAL: CUSTOM COLORMAP FOR SPI/DROUGHT MAPS
+For ALL SPI and drought visualizations, use this EXACT custom colormap:
+```python
+import matplotlib.colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap
+colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90','#00FF00','#00CED1','#0000FF','#00008B']
+cmap = LinearSegmentedColormap.from_list('spi_overlay', colors, N=256)
+```
+
 FOR DROUGHT/SPI QUERIES - copy this pattern:
 ```python
 import builtins
 # Extract location from user request dynamically
 user_query_lower = user_request.lower()
+
+# FLASH DROUGHT DETECTION EXPLAINED:
+# Flash drought = rapid transition from normal/wet conditions to severe drought
+# Criteria: Areas where SPI went from ≥0 (normal/wet) to ≤-1.5 (severe drought) between two months
+# 
+# For flash drought queries:
+# 1. Load TWO months of SPI data (start month and end month from user query)
+# 2. Create criteria mask: (start_spi >= 0) & (end_spi <= -1.5)
+# 3. Create side-by-side maps:
+#    LEFT: Show end month SPI with RED HATCHING (///) on flash drought areas
+#    RIGHT: Show SPI change (end - start) with hatching on rapid decline areas
+# 4. Calculate percentage of area affected by flash drought
+# 5. Use contourf with hatches=['///'] for red diagonal hatching
+# 6. Show statistics: "Flash drought detected in X locations (Y% of region)"
+
+# DROUGHT RECOVERY DETECTION EXPLAINED:
+# Drought recovery = improvement from drought conditions to normal/wet conditions
+# Criteria: Areas where SPI went from ≤-1.0 (drought) to ≥0 (normal/wet) between two time periods
+#
+# For drought recovery queries:
+# 1. Load TWO time periods of SPI data (typically same month in different years)
+# 2. Create recovery mask: (start_spi <= -1.0) & (end_spi >= 0.0)
+# 3. Create side-by-side maps:
+#    LEFT: Show start period SPI with GREEN HATCHING (+++) on recovery areas
+#    RIGHT: Show SPI change (end - start) with hatching on significant improvement
+# 4. Calculate percentage of area that recovered from drought
+# 5. Use contourf with hatches=['+++'] for green cross hatching
+# 6. Show statistics: "Drought recovery detected in X locations (Y% of region)"
+
+# HATCHING TECHNIQUE:
+# Use matplotlib's contourf function with hatches parameter:
+# ax.contourf(lon_grid, lat_grid, mask.astype(float), levels=[0.5, 1.5], colors=['red'], alpha=0.5)
+# ax.contourf(lon_grid, lat_grid, mask.astype(float), levels=[0.5, 1.5], colors='none', hatches=['///'])
+
+# REGION DETECTION:
+# Auto-detect region from user query and set appropriate coordinates
+# Extract time periods from user query (Jun→Aug 2012, 2012→2013, etc.)
+# Use side-by-side subplot layout with shared colorbar
 
 # Dynamic coordinate detection based on user query
 if 'maryland' in user_query_lower:
@@ -205,6 +313,11 @@ if any(phrase in user_request.lower() for phrase in ['what is', 'average', 'how 
     result = f"The SPI in {region_name} for {month_names[month-1].title()} {year} is {spi_value:.2f} ({condition})"
 
 # FIXED: For MAP queries (show me, display, visualize) - return map
+# CRITICAL: Create custom SPI colormap
+import matplotlib.colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap
+colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90','#00FF00','#00CED1','#0000FF','#00008B']
+spi_cmap = LinearSegmentedColormap.from_list('spi_custom', colors, N=256)
 else:
     title = f"Standardized Precipitation Index (SPI) — {month_names[month-1].title()} {year}, {region_name}"
     fig, ax = create_spi_map_with_categories(data.longitude, data.latitude, data.values, title, region_name=region_name.lower())
@@ -265,8 +378,15 @@ fig = plt.figure(figsize=(20, 12))
 ax1 = fig.add_subplot(1, 2, 1, projection=ccrs.PlateCarree())
 ax2 = fig.add_subplot(1, 2, 2, projection=ccrs.PlateCarree())
 
-# Both use same SPI scale (-2.5 to 2.5) with RdBu colormap (original for subplots)
-im1 = ax1.pcolormesh(may_data.longitude, may_data.latitude, may_data.values, cmap='RdBu', vmin=-2.5, vmax=2.5, shading='auto', transform=ccrs.PlateCarree())
+# CRITICAL: Create custom SPI colormap first
+import matplotlib.colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap
+colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90','#00FF00','#00CED1','#0000FF','#00008B']
+spi_cmap = LinearSegmentedColormap.from_list('spi_custom', colors, N=256)
+
+# Both use same SPI scale (-2.5 to 2.5) with CUSTOM colormap
+im1 = ax1.pcolormesh(may_data.longitude, may_data.latitude, may_data.values, cmap=spi_cmap, vmin=-2.5, vmax=2.5, shading='auto', transform=ccrs.PlateCarree())
+
 ax1.add_feature(cfeature.COASTLINE)
 ax1.add_feature(cfeature.STATES)
 ax1.set_title('Florida SPI - May 2023')
@@ -534,15 +654,6 @@ except Exception as e:
     url = save_plot_to_blob_simple(fig, 'temp_fallback.png', account_key)
     plt.close(fig)
     ds.close()
-    result = f"Animation failed, showing static map: {url}"
-```
-
-FOR SPI MAPS (DUAL OUTPUT):
-```python
-import builtins, json, numpy as np
-lat_min, lat_max = 32.0, 42.0
-lon_min, lon_max = -125.0, -114.0
-ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2020, 5)
 data = ds['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
 if hasattr(data, 'squeeze'): data = data.squeeze()
 fig, ax = create_spi_map_with_categories(data.longitude, data.latitude, data.values,
@@ -564,7 +675,7 @@ lon_grid, lat_grid = np.meshgrid(data.longitude, data.latitude)
 masked = np.ma.masked_invalid(data.values)
 import matplotlib.colors as mcolors
 from matplotlib.colors import LinearSegmentedColormap
-colors = ['#8B0000','#FF0000','#FF4500','#FFA500','#FFFF00','#FFFFFF80','#87CEEB','#4169E1','#0000FF']
+colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90','#00FF00','#00CED1','#0000FF','#00008B']
 cmap = LinearSegmentedColormap.from_list('spi_overlay', colors, N=256)
 ax2.pcolormesh(lon_grid, lat_grid, masked, cmap=cmap, vmin=vmin, vmax=vmax, shading='auto', alpha=0.9)
 overlay_url = save_plot_to_blob_simple(fig2, 'spi_overlay.png', account_key)
