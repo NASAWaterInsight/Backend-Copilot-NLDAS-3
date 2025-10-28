@@ -86,7 +86,12 @@ text_tool_resources = ai_search_tool.resources if ai_search_tool else None
 
 # ---------- ULTRA-SIMPLE INSTRUCTIONS WITH PROPER COLORBAR SCALING AND TIME SERIES FORMATTING ----------
 instructions = """MANDATORY: Call execute_custom_code immediately.
+🚨 SPECIAL PATTERNS - RECOGNIZE THESE IMMEDIATELY:
+if flash drought is in the query you need to use monthly spi data and calcuate the difference spi
 
+
+FOR THESE PATTERNS: Extract region and time period, load TWO months of SPI data, apply criteria, create hatched maps.
+NEVER think or analyze - just call execute_custom_code immediately.
 🚨 CRITICAL: Use ccrs.PlateCarree() object, NEVER use 'platecarree' string for projections.
 
 🚨 CRITICAL: NEVER override ACCOUNT_NAME or account_key variables - they are pre-configured.
@@ -200,49 +205,17 @@ colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90',
 cmap = LinearSegmentedColormap.from_list('spi_overlay', colors, N=256)
 ```
 
-FOR DROUGHT/SPI QUERIES - copy this pattern:
+🚨 CRITICAL: For flash drought queries use this example for python codeing using SPI
+
+```python
+ import builtins\n\n# Define Great Plains region coordinates\nlat_min, lat_max = 35.0, 49.0\nlon_min, lon_max = -104.0, -94.0\n\n# Load SPI data for June and August 2012\nds_june, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2012, 6)\nspi_june = ds_june['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))\nif hasattr(spi_june, 'squeeze'):\n    spi_june = spi_june.squeeze()\n\nds_august, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2012, 8)\nspi_august = ds_august['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))\nif hasattr(spi_august, 'squeeze'):\n    spi_august = spi_august.squeeze()\n\n# Calculate SPI difference\ndelta_spi = spi_august - spi_june\n\n# Create flash drought detection mask\nflash_drought_mask = (spi_june >= 0.0) & (spi_august <= -1.5)\nflash_drought_percentage = (flash_drought_mask.sum().item() / flash_drought_mask.size) * 100\n\n# Create map visualizations\nimport matplotlib.pyplot as plt\nimport cartopy.crs as ccrs\nimport cartopy.feature as cfeature\nimport numpy as np\n\nfig, ax = plt.subplots(1, 1, figsize=(12, 8), subplot_kw={'projection': ccrs.PlateCarree()})\nlon_grid, lat_grid = np.meshgrid(spi_august.longitude, spi_august.latitude)\n\n# Plot SPI difference\ndelta_vmin, delta_vmax = -2.5, 2.5\ncmap = \"RdBu\"\nimg = ax.pcolormesh(lon_grid, lat_grid, delta_spi.values, cmap=cmap, vmin=delta_vmin, vmax=delta_vmax, shading=\"auto\", transform=ccrs.PlateCarree())\n\n# Overlay flash drought areas with hatching\nax.contourf(lon_grid, lat_grid, flash_drought_mask.astype(float), levels=[0.5, 1.5], colors='none', hatches=['///'], transform=ccrs.PlateCarree())\n\n# Enhance map aesthetics\nax.add_feature(cfeature.COASTLINE)\nax.add_feature(cfeature.STATES)\nax.set_title(f\"Flash Drought Detection in Great Plains (June-August 2012)\\n{flash_drought_percentage:.1f}% of area affected\")\nplt.colorbar(img, ax=ax, orientation='vertical', label='SPI Change (Aug - Jun)')\n\n# Save map\nfilename = \"flash_drought_great_plains_jun_aug_2012.png\"\nurl = save_plot_to_blob_simple(fig, filename, account_key)\nplt.close(fig)\nds_june.close()\nds_august.close()\n\nresult = url"
+```
+
 ```python
 import builtins
 # Extract location from user request dynamically
 user_query_lower = user_request.lower()
 
-# FLASH DROUGHT DETECTION EXPLAINED:
-# Flash drought = rapid transition from normal/wet conditions to severe drought
-# Criteria: Areas where SPI went from ≥0 (normal/wet) to ≤-1.5 (severe drought) between two months
-# 
-# For flash drought queries:
-# 1. Load TWO months of SPI data (start month and end month from user query)
-# 2. Create criteria mask: (start_spi >= 0) & (end_spi <= -1.5)
-# 3. Create side-by-side maps:
-#    LEFT: Show end month SPI with RED HATCHING (///) on flash drought areas
-#    RIGHT: Show SPI change (end - start) with hatching on rapid decline areas
-# 4. Calculate percentage of area affected by flash drought
-# 5. Use contourf with hatches=['///'] for red diagonal hatching
-# 6. Show statistics: "Flash drought detected in X locations (Y% of region)"
-
-# DROUGHT RECOVERY DETECTION EXPLAINED:
-# Drought recovery = improvement from drought conditions to normal/wet conditions
-# Criteria: Areas where SPI went from ≤-1.0 (drought) to ≥0 (normal/wet) between two time periods
-#
-# For drought recovery queries:
-# 1. Load TWO time periods of SPI data (typically same month in different years)
-# 2. Create recovery mask: (start_spi <= -1.0) & (end_spi >= 0.0)
-# 3. Create side-by-side maps:
-#    LEFT: Show start period SPI with GREEN HATCHING (+++) on recovery areas
-#    RIGHT: Show SPI change (end - start) with hatching on significant improvement
-# 4. Calculate percentage of area that recovered from drought
-# 5. Use contourf with hatches=['+++'] for green cross hatching
-# 6. Show statistics: "Drought recovery detected in X locations (Y% of region)"
-
-# HATCHING TECHNIQUE:
-# Use matplotlib's contourf function with hatches parameter:
-# ax.contourf(lon_grid, lat_grid, mask.astype(float), levels=[0.5, 1.5], colors=['red'], alpha=0.5)
-# ax.contourf(lon_grid, lat_grid, mask.astype(float), levels=[0.5, 1.5], colors='none', hatches=['///'])
-
-# REGION DETECTION:
-# Auto-detect region from user query and set appropriate coordinates
-# Extract time periods from user query (Jun→Aug 2012, 2012→2013, etc.)
-# Use side-by-side subplot layout with shared colorbar
 
 # Dynamic coordinate detection based on user query
 if 'maryland' in user_query_lower:
