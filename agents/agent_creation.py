@@ -206,16 +206,35 @@ cmap = LinearSegmentedColormap.from_list('spi_overlay', colors, N=256)
 ```
 
 🚨 CRITICAL: For flash drought queries use this example for python codeing using SPI
-
 ```python
  import builtins\n\n# Define Great Plains region coordinates\nlat_min, lat_max = 35.0, 49.0\nlon_min, lon_max = -104.0, -94.0\n\n# Load SPI data for June and August 2012\nds_june, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2012, 6)\nspi_june = ds_june['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))\nif hasattr(spi_june, 'squeeze'):\n    spi_june = spi_june.squeeze()\n\nds_august, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2012, 8)\nspi_august = ds_august['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))\nif hasattr(spi_august, 'squeeze'):\n    spi_august = spi_august.squeeze()\n\n# Calculate SPI difference\ndelta_spi = spi_august - spi_june\n\n# Create flash drought detection mask\nflash_drought_mask = (spi_june >= 0.0) & (spi_august <= -1.5)\nflash_drought_percentage = (flash_drought_mask.sum().item() / flash_drought_mask.size) * 100\n\n# Create map visualizations\nimport matplotlib.pyplot as plt\nimport cartopy.crs as ccrs\nimport cartopy.feature as cfeature\nimport numpy as np\n\nfig, ax = plt.subplots(1, 1, figsize=(12, 8), subplot_kw={'projection': ccrs.PlateCarree()})\nlon_grid, lat_grid = np.meshgrid(spi_august.longitude, spi_august.latitude)\n\n# Plot SPI difference\ndelta_vmin, delta_vmax = -2.5, 2.5\ncmap = \"RdBu\"\nimg = ax.pcolormesh(lon_grid, lat_grid, delta_spi.values, cmap=cmap, vmin=delta_vmin, vmax=delta_vmax, shading=\"auto\", transform=ccrs.PlateCarree())\n\n# Overlay flash drought areas with hatching\nax.contourf(lon_grid, lat_grid, flash_drought_mask.astype(float), levels=[0.5, 1.5], colors='none', hatches=['///'], transform=ccrs.PlateCarree())\n\n# Enhance map aesthetics\nax.add_feature(cfeature.COASTLINE)\nax.add_feature(cfeature.STATES)\nax.set_title(f\"Flash Drought Detection in Great Plains (June-August 2012)\\n{flash_drought_percentage:.1f}% of area affected\")\nplt.colorbar(img, ax=ax, orientation='vertical', label='SPI Change (Aug - Jun)')\n\n# Save map\nfilename = \"flash_drought_great_plains_jun_aug_2012.png\"\nurl = save_plot_to_blob_simple(fig, filename, account_key)\nplt.close(fig)\nds_june.close()\nds_august.close()\n\nresult = url"
 ```
 
+🚨 CRITICAL: For drought recovery queries use this example for python codeing using SPI
 ```python
-import builtins
-# Extract location from user request dynamically
-user_query_lower = user_request.lower()
+import builtins\n\n# Define Southeast region coordinates\nlat_min, lat_max = 24.0, 36.0\nlon_min, lon_max = -90.0, -75.0\n\n# Load SPI data for December 2012 and December 2013\nds_dec_2012, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2012, 12)\nspi_dec_2012 = ds_dec_2012['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))\nif hasattr(spi_dec_2012, 'squeeze'):\n    spi_dec_2012 = spi_dec_2012.squeeze()\n\nds_dec_2013, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2013, 12)\nspi_dec_2013 = ds_dec_2013['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))\nif hasattr(spi_dec_2013, 'squeeze'):\n    spi_dec_2013 = spi_dec_2013.squeeze()\n\n# Calculate SPI difference\ndelta_spi = spi_dec_2013 - spi_dec_2012\n\n# Create drought recovery detection mask\ndrought_recovery_mask = (spi_dec_2012 <= -1.0) & (spi_dec_2013 >= -1.0)\ndrought_recovery_percentage = (drought_recovery_mask.sum().item() / drought_recovery_mask.size) * 100\n\n# Create map visualizations\nimport matplotlib.pyplot as plt\nimport cartopy.crs as ccrs\nimport cartopy.feature as cfeature\nimport numpy as np\n\nfig, ax = plt.subplots(1, 1, figsize=(12, 8), subplot_kw={'projection': ccrs.PlateCarree()})\nlon_grid, lat_grid = np.meshgrid(spi_dec_2013.longitude, spi_dec_2013.latitude)\n\n# Plot SPI difference\ndelta_vmin, delta_vmax = -2.5, 2.5\ncmap = \"RdBu\"\nimg = ax.pcolormesh(lon_grid, lat_grid, delta_spi.values, cmap=cmap, vmin=delta_vmin, vmax=delta_vmax, shading=\"auto\", transform=ccrs.PlateCarree())\n\n# Overlay drought recovery areas with hatching\nax.contourf(lon_grid, lat_grid, drought_recovery_mask.astype(float), levels=[0.5, 1.5], colors='none', hatches=['///'], transform=ccrs.PlateCarree())\n\n# Enhance map aesthetics\nax.add_feature(cfeature.COASTLINE)\nax.add_feature(cfeature.STATES)\nax.set_title(f\"Drought Recovery Assessment in Southeast US (Dec 2012 - Dec 2013)\\n{drought_recovery_percentage:.1f}% of area recovered from drought\")\nplt.colorbar(img, ax=ax, orientation='vertical', label='SPI Change (2013 - 2012)')\n\n# Save map\nfilename = \"drought_recovery_southeast_dec2012_dec2013.png\"\nurl = save_plot_to_blob_simple(fig, filename, account_key)\nplt.close(fig)\nds_dec_2012.close()\nds_dec_2013.close()\n\nresult = url
+```
 
+🚨 CRITICAL: When user asks about "annual trends" or "trends", calculate the annual average and do not use a fixed month, use this python code:
+```python
+# Annual mean SPI (default)
+monthly_means = []
+for m in range(1, 13):
+    try:
+        ds_month, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, m)
+        month_spi = ds_month['SPI3'].sel(
+            latitude=slice(lat_min, lat_max),
+            longitude=slice(lon_min, lon_max)
+        )
+        if hasattr(month_spi, 'squeeze'):
+            month_spi = month_spi.squeeze()
+        monthly_means.append(float(month_spi.mean()))
+        ds_month.close()
+    except:
+        continue
+
+spi_mean = np.nanmean(monthly_means) if monthly_means else None
+```
 
 # Dynamic coordinate detection based on user query
 if 'maryland' in user_query_lower:
@@ -244,20 +263,54 @@ else:
     lon_min, lon_max = -79.5, -75.0
     region_name = 'Maryland'
 
-# Extract year and month from user request
+🚨 CRITICAL: Extract year and month from user request
+```python
 import re
-year_match = re.search(r'(20\d{2})', user_request)
-year = int(year_match.group(1)) if year_match else 2020
 
-month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_request.lower())
-month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
-month = month_names.index(month_match.group(1)) + 1 if month_match else 5
+# Trend detection FIRST
+trend_keywords = ['trend', 'trends', 'over time', 'change', 'changing',
+                  'drying', 'wetting', 'getting', 'multi-year']
+is_trend_query = any(word in user_request.lower() for word in trend_keywords)
 
-# Load SPI data
-ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
-data = ds['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
-if hasattr(data, 'squeeze'):
-    data = data.squeeze()
+# Month detection ONLY IF NOT a trend
+month = None
+if not is_trend_query:
+    month_match = re.search(
+        r'(january|february|march|april|may|june|july|august|september|october|november|december)',
+        user_request.lower()
+    )
+    if month_match:
+        month_names = ['january','february','march','april','may','june',
+                       'july','august','september','october','november','december']
+        month = month_names.index(month_match.group(1)) + 1
+
+print(f"Trend: {is_trend_query}, Month: {month}")
+
+# FINAL behavior selection
+if is_trend_query:
+    # ALWAYS run annual trend code
+    execute_trend_analysis()  # Insert your big block here
+else:
+    if month is None:
+        # User wants a single-year annual map
+        execute_annual_spi_map()
+    else:
+        # Single month map
+        execute_single_month_spi_map(month)
+```
+# UPDATED: Use the trend analysis code when month is None or trend detected
+if is_trend_query:
+    month = None  # Force annual-only
+    # Use the existing trend analysis pattern you already have
+    # Don't load single month - analyze multiple years
+    logging.info("🎯 Using trend analysis pattern for multi-year data")
+    # Skip the single month loading and use your trend analysis code
+else:
+    # Load SPI data for specific month
+    ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
+    data = ds['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
+    if hasattr(data, 'squeeze'):
+        data = data.squeeze()
 
 # FIXED: For TEXT queries (what is, average, how much, tell me) - NOT show me
 if any(phrase in user_request.lower() for phrase in ['what is', 'average', 'how much', 'tell me']):
