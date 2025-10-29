@@ -126,38 +126,63 @@ def determine_optimal_zoom_level(bounds: dict) -> int:
     return best_zoom                    # City level
 
 
-def create_tile_config(map_data: dict, user_query: str) -> dict:
+def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) -> dict:
     """
-    Create tile configuration - NO TIME DEFAULTS
+    Create tile configuration
+    Args:
+        map_data: Map result with bounds
+        user_query: Original user query
+        date_info: Pre-extracted date info from extract_analysis_info() (optional)
     """
     import re
     import mercantile
     
-    # Extract date and variable - NO DEFAULTS
-    year_match = re.search(r'(20\d{2})', user_query)
-    if not year_match:
-        return {"error": "No year specified in query"}
-    year = int(year_match.group(1))
-    
-    month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_query.lower())
-    if not month_match:
-        return {"error": "No month specified in query"}
-    month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
-    month = month_names.index(month_match.group(1)) + 1
-    
-    variable = 'Tair'  # Default
-    if any(word in user_query.lower() for word in ['precipitation', 'rain', 'rainfall']):
-        variable = 'Rainf'
-    elif any(word in user_query.lower() for word in ['drought', 'spi']):
-        variable = 'SPI3'
-        date_str = f"{year}-{month:02d}"  # SPI is monthly
+    # ✅ Use pre-extracted date info if available
+    if date_info:
+        variable = date_info.get("variable", "Tair")
+        date_str = date_info.get("date_str")
+        
+        # Parse date_str to get year, month, day
+        if date_str:
+            date_parts = date_str.split('-')
+            year = int(date_parts[0])
+            month = int(date_parts[1])
+            day = int(date_parts[2]) if len(date_parts) > 2 else None
+            
+            logging.info(f"🗓️ Using pre-extracted date info: {date_str}, {variable}")
+        else:
+            return {"error": "No date in extracted info"}
     else:
+        # Fall back to query parsing
+        year_match = re.search(r'(20\d{2})', user_query)
+        if not year_match:
+            return {"error": "No year specified in query"}
+        year = int(year_match.group(1))
+        
+        month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_query.lower())
+        if not month_match:
+            return {"error": "No month specified in query"}
+        month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
+        month = month_names.index(month_match.group(1)) + 1
+        
+        variable = 'Tair'  # Default
+        if any(word in user_query.lower() for word in ['precipitation', 'rain', 'rainfall']):
+            variable = 'Rainf'
+        elif any(word in user_query.lower() for word in ['drought', 'spi']):
+            variable = 'SPI3'
+        
         # For daily variables, require day specification
         day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', user_query)
-        if not day_match or not (1 <= int(day_match.group(1)) <= 31):
+        if variable != 'SPI3' and (not day_match or not (1 <= int(day_match.group(1)) <= 31)):
             return {"error": "No valid day specified in query"}
-        day = int(day_match.group(1))
-        date_str = f"{year}-{month:02d}-{day:02d}"
+        day = int(day_match.group(1)) if day_match else None
+    
+    # Build date_str if not already set
+    if not date_info or not date_str:
+        if variable == 'SPI3':
+            date_str = f"{year}-{month:02d}"
+        else:
+            date_str = f"{year}-{month:02d}-{day:02d}"
     
     # Get bounds from map data
     bounds = map_data.get("bounds", {})
@@ -250,9 +275,6 @@ def create_tile_config(map_data: dict, user_query: str) -> dict:
     total_tiles = tile_count_x * tile_count_y
     
     logging.info(f"🎯 Final tile grid: {tile_count_x} × {tile_count_y} = {total_tiles} tiles at zoom {zoom}")
-    
-    # ❌ REMOVED: The old "smart tile count management" that was reducing tiles
-    # We trust the area-based calculation from determine_optimal_zoom_level()
     
     # Generate tile list
     tile_list = []
@@ -501,26 +523,26 @@ def handle_chat_request(data):
         relevant_memories = memory_manager.search(user_query, user_id, limit=3)
 
         # Build enhanced query with memory context
-        memory_context = ""
+        memory_context_str = ""  # ← Changed name
         if recent_memories or relevant_memories:
-            memory_context = "\n\n🧠 Recent context from your previous queries:\n"
+            memory_context_str = "\n\n🧠 Recent context from your previous queries:\n"
             
-            # Add recent memories
             if recent_memories:
-                memory_context += "Recent conversations:\n"
+                memory_context_str += "Recent conversations:\n"
                 for mem in recent_memories[:2]:
-                    memory_context += f"- {mem}\n"
+                    memory_context_str += f"- {mem}\n"
             
-            # Add relevant memories
             if relevant_memories:
-                memory_context += "\nRelevant previous analyses:\n"
+                memory_context_str += "\nRelevant previous analyses:\n"
                 for mem in relevant_memories[:2]:
                     mem_text = mem.get("memory", "")
                     if mem_text:
-                        memory_context += f"- {mem_text}\n"
+                        memory_context_str += f"- {mem_text}\n"
 
-        enhanced_query = user_query + memory_context
-        logging.info(f"📝 Enhanced query with memory: {len(memory_context)} chars of context")
+        enhanced_query = user_query + memory_context_str  # ← Also change here
+            
+        
+     
 
         # Create a thread for the conversation
         thread = project_client.agents.threads.create()
@@ -641,7 +663,7 @@ def handle_chat_request(data):
                                         logging.info("🗺️ Map result detected")
                                         
                                         # ✅ STORE ANALYSIS IN MEMORY BEFORE PROCESSING
-                                        extracted_info = extract_analysis_info(user_query, result_value)
+                                        extracted_info = extract_analysis_info(user_query, result_value, memory_context_str)
                                         
                                         memory_manager.add_structured_analysis(
                                             user_id=user_id,
@@ -659,9 +681,34 @@ def handle_chat_request(data):
                                         enriched["temperature_data"] = build_temperature_data(enriched.get("geojson", {}))
                                         
                                         use_tiles = should_use_tiles(user_query, enriched)
-                                        
+                        
                                         if use_tiles:
-                                            tile_config = create_tile_config(enriched, user_query)
+                                            tile_config = create_tile_config(enriched, user_query, extracted_info)
+                                            
+                                            # ✅ Check if tile config failed
+                                            if "error" in tile_config:
+                                                logging.warning(f"⚠️ Tile generation failed: {tile_config['error']}")
+                                                logging.info("📍 Falling back to static-only response")
+                                                
+                                                # Return static-only response
+                                                response = {
+                                                    "status": "success",
+                                                    "content": enriched.get("static_url", "Map generated"),
+                                                    "static_url": enriched.get("static_url"),
+                                                    "overlay_url": enriched.get("overlay_url"),
+                                                    "geojson": enriched["geojson"],
+                                                    "bounds": enriched["bounds"],
+                                                    "map_config": enriched["map_config"],
+                                                    "temperature_data": enriched["temperature_data"],
+                                                    "type": "visualization_with_overlay",
+                                                    "agent_id": text_agent_id,
+                                                    "thread_id": thread.id,
+                                                    "analysis_data": analysis_result,
+                                                    "user_id": user_id,
+                                                    "tile_error": tile_config.get('error')
+                                                }
+                                                
+                                                return make_json_serializable(response)
                                             
                                             tool_outputs.append({
                                                 "tool_call_id": tool_call.id,
@@ -812,22 +859,46 @@ def handle_chat_request(data):
 
 
 # ✅ ADD THIS HELPER FUNCTION (place it before handle_chat_request or after it)
-def extract_analysis_info(query: str, result: dict) -> dict:
-    """Extract variable, region, and date from query and result"""
+def extract_analysis_info(query: str, result: dict, memory_context: str = "") -> dict:
+    """
+    Extract variable, region, and date from query, result, and memory context
+    
+    Args:
+        query: Current user query
+        result: Result dict from code execution
+        memory_context: Recent memory context string
+    """
     import re
     
     query_lower = query.lower()
     
-    # Extract variable
-    variable = "Tair"  # default
-    if any(word in query_lower for word in ['precipitation', 'rain', 'rainfall']):
-        variable = "Rainf"
-    elif any(word in query_lower for word in ['drought', 'spi']):
-        variable = "SPI3"
-    elif 'temperature' in query_lower or 'temp' in query_lower:
-        variable = "Tair"
+    # ✅ STEP 1: Extract variable (check memory FIRST for "same" queries)
+    variable = None
     
-    # Extract region
+    if any(word in query_lower for word in ['same', 'similar', 'that', 'this']):
+        # Look for variable in memory context
+        if 'SPI3' in memory_context or 'drought' in memory_context.lower():
+            variable = "SPI3"
+            logging.info("📝 Extracted variable from memory: SPI3 (drought)")
+        elif 'Rainf' in memory_context or 'precipitation' in memory_context.lower():
+            variable = "Rainf"
+            logging.info("📝 Extracted variable from memory: Rainf (precipitation)")
+        elif 'Tair' in memory_context or 'temperature' in memory_context.lower():
+            variable = "Tair"
+            logging.info("📝 Extracted variable from memory: Tair (temperature)")
+    
+    # If not found in memory, extract from current query
+    if not variable:
+        if any(word in query_lower for word in ['drought', 'spi']):
+            variable = "SPI3"
+        elif any(word in query_lower for word in ['precipitation', 'rain', 'rainfall']):
+            variable = "Rainf"
+        elif any(word in query_lower for word in ['temperature', 'temp']):
+            variable = "Tair"
+        else:
+            variable = "Tair"  # Default
+    
+    # ✅ STEP 2: Extract region
     region = "unknown"
     regions = {
         'michigan': 'michigan',
@@ -842,28 +913,49 @@ def extract_analysis_info(query: str, result: dict) -> dict:
             region = value
             break
     
-    # Extract date
-    year_match = re.search(r'(20\d{2})', query)
-    year = int(year_match.group(1)) if year_match else 2023
+    # ✅ STEP 3: Extract date (check memory for "same" queries)
+    year = None
+    month = None
+    day = None
     
-    month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
-    month_match = re.search(r'(' + '|'.join(month_names) + ')', query_lower)
-    month = month_names.index(month_match.group(1)) + 1 if month_match else 6
+    if any(word in query_lower for word in ['same', 'similar', 'that', 'this']):
+        # Extract date from memory (format: "2023-06-15" or "2023-06")
+        memory_date_match = re.search(r'on (\d{4}-\d{2}(?:-\d{2})?)', memory_context)
+        if memory_date_match:
+            date_str = memory_date_match.group(1)
+            date_parts = date_str.split('-')
+            year = int(date_parts[0])
+            month = int(date_parts[1])
+            day = int(date_parts[2]) if len(date_parts) > 2 else None
+            logging.info(f"📅 Extracted date from memory: {date_str}")
     
-    day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', query)
-    day = int(day_match.group(1)) if day_match and variable != "SPI3" else 15
+    # If not found in memory, extract from query
+    if not year:
+        year_match = re.search(r'(20\d{2})', query)
+        year = int(year_match.group(1)) if year_match else 2023
     
+    if not month:
+        month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
+        month_match = re.search(r'(' + '|'.join(month_names) + ')', query_lower)
+        month = month_names.index(month_match.group(1)) + 1 if month_match else 6
+    
+    if day is None and variable != "SPI3":
+        day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', query)
+        day = int(day_match.group(1)) if day_match else 15
+    
+    # Build date string
     if variable == "SPI3":
         date_str = f"{year}-{month:02d}"
     else:
         date_str = f"{year}-{month:02d}-{day:02d}"
+    
+    logging.info(f"📊 Extracted: variable={variable}, region={region}, date={date_str}")
     
     return {
         "variable": variable,
         "region": region,
         "date_str": date_str
     }
-
 def make_json_serializable(obj):
     """Enhanced JSON serialization that handles all Python types including mappingproxy"""
     import types
