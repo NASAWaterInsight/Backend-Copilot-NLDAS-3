@@ -17,6 +17,10 @@ matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import io
 import base64
+# Add these cache variables after the existing imports
+_KERCHUNK_FILES_CACHE = None
+_CACHE_TIMESTAMP = None
+_CACHE_DURATION = 300  # 5 minutes in seconds
 
 # --- Kerchunk container configuration ---
 KERCHUNK_CONTAINER = "kerchunk"
@@ -74,7 +78,43 @@ VARIABLE_MAPPING = {
     "drought": "SPI3",
     "precipitation_anomaly": "SPI3"
 }
-
+def _get_cached_available_files(account_name: str, account_key: str):
+    """
+    Get cached list of available kerchunk files to avoid repeated API calls
+    """
+    global _KERCHUNK_FILES_CACHE, _CACHE_TIMESTAMP
+    
+    import time
+    current_time = time.time()
+    
+    # Check if cache is valid
+    if (_KERCHUNK_FILES_CACHE is not None and 
+        _CACHE_TIMESTAMP is not None and 
+        (current_time - _CACHE_TIMESTAMP) < _CACHE_DURATION):
+        logging.info("📋 Using cached file list")
+        return _KERCHUNK_FILES_CACHE
+    
+    # Cache miss - fetch and cache
+    logging.info("🔄 Refreshing file list cache")
+    available_dates = find_available_kerchunk_files(account_name, account_key)
+    
+    # Update cache
+    _KERCHUNK_FILES_CACHE = available_dates
+    _CACHE_TIMESTAMP = current_time
+    
+    # Log availability info only on cache refresh
+    if available_dates:
+        first_date = available_dates[0]['date']
+        last_date = available_dates[-1]['date']
+        total_days = len(available_dates)
+        logging.info(f"📅 Data available: {first_date.strftime('%Y-%m-%d')} to {last_date.strftime('%Y-%m-%d')} ({total_days} days)")
+        
+        years_available = sorted(set(d['date'].year for d in available_dates))
+        months_available = sorted(set(d['date'].month for d in available_dates))
+        logging.info(f"📊 Years available: {years_available}")
+        logging.info(f"📊 Months available: {months_available}")
+    
+    return available_dates
 def get_mapped_variable(variable: str, available_vars: list):
     """
     Map a variable name to NLDAS variable name and validate it exists.
@@ -255,6 +295,7 @@ def find_available_kerchunk_files(account_name: str, account_key: str):
     available_dates.sort(key=lambda x: x["date"])
     return available_dates
 
+<<<<<<< HEAD
 def load_specific_date_kerchunk(account_name: str, account_key: str, year: int, month: int, day: int):
     """
     Load kerchunk data for a specific date with enhanced error handling
@@ -366,28 +407,9 @@ def load_specific_date_kerchunk(account_name: str, account_key: str, year: int, 
             "requested_date": dt.date(),
             "available_date_range": f"{available_dates[0]['date'].date()} to {available_dates[-1]['date'].date()}" if available_dates else "unknown"
         }
+=======
+>>>>>>> origin/feature/debug
 
-        mapper = fsspec.get_mapper(
-            "reference://",
-            fo=refs,
-            remote_protocol="az",
-            remote_options={"account_name": account_name, "account_key": account_key},
-        )
-
-        ds = xr.open_dataset(mapper, engine="zarr", backend_kwargs={"consolidated": False})
-        return ds, debug
-        
-    except Exception as e:
-        # ENHANCED: Dynamic error message based on what's available
-        available_info = "No data availability information"
-        if available_dates:
-            years_available = sorted(set(d['date'].year for d in available_dates))
-            months_available = sorted(set(d['date'].month for d in available_dates))
-            available_info = f"Available years: {years_available}, months: {months_available}"
-        
-        error_msg = f"Failed to load kerchunk data for {dt.date()}: {str(e)}. {available_info}"
-        logging.error(error_msg)
-        raise Exception(error_msg)
 
 def _discover_kerchunk_index_for_date(account_name: str, account_key: str, blob_path: str):
     """
@@ -457,6 +479,50 @@ def save_plot_to_blob_simple(fig, filename: str, account_key: str):
     except Exception as e:
         logging.error(f"Failed to save plot to blob storage: {e}")
         raise Exception(f"Failed to save plot to blob storage: {str(e)}")
+def load_specific_date_kerchunk(account_name: str, account_key: str, year: int, month: int, day: int):
+    """
+    FAST VERSION - Direct file access like manual code
+    Minimal validation, direct file reading
+    """
+    # Basic validation only
+    if month < 1 or month > 12:
+        raise ValueError(f"Month must be 1-12. Requested: {month}")
+    if day < 1 or day > 31:
+        raise ValueError(f"Day must be 1-31. Requested: {day}")
+    
+    # Direct path construction (like your manual code)
+    nldas_date = f"A{year:04d}{month:02d}{day:02d}"
+    expected_filename = f"kerchunk_NLDAS_FOR0010_H.{nldas_date}.030.beta.json"
+    expected_path = f"{KERCHUNK_CONTAINER}/{expected_filename}"
+    
+    # ADD THIS LINE - Simple progress logging
+    logging.info(f"📁 Loading {expected_filename}")
+    
+    # Direct file access (like your manual code)
+    fs = _kerchunk_fs(account_name, account_key)
+    
+    try:
+        # FAST: Direct file read (no validation overhead)
+        with fs.open(expected_path, 'r') as f:
+            refs = json.load(f)
+        
+        # Skip complex debug info - just the essentials
+        debug = {"file_used": expected_filename}
+        
+        # Direct dataset creation
+        mapper = fsspec.get_mapper(
+            "reference://",
+            fo=refs,
+            remote_protocol="az",
+            remote_options={"account_name": account_name, "account_key": account_key},
+        )
+        
+        ds = xr.open_dataset(mapper, engine="zarr", backend_kwargs={"consolidated": False})
+        return ds, debug
+        
+    except Exception as e:
+        # Simple error - no extensive fallback logic
+        raise Exception(f"Failed to load {expected_filename}: {str(e)}")
 
 def handle_weather_function_call(function_args: dict):
     """

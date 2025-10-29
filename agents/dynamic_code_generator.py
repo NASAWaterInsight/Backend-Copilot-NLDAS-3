@@ -1233,6 +1233,25 @@ def execute_custom_code(args: dict):
         # Execute the code
         try:
             exec_locals = {}
+            # ADD TIMING VARIABLES TO EXECUTION ENVIRONMENT
+            exec_globals.update({
+                '_step_times': {},  # Track timing inside generated code
+                '_step_timer': time.time,  # Timer function
+            })
+            
+            # ADD TIMING HELPER FUNCTION
+            timing_helper_code = """
+def time_step(step_name, func, *args, **kwargs):
+    import time
+    start = time.time()
+    result = func(*args, **kwargs)
+    _step_times[step_name] = time.time() - start
+    print(f"⏱️ {step_name}: {_step_times[step_name]:.3f}s")
+    return result
+"""
+            
+            # Execute timing helper first
+            exec(timing_helper_code, exec_globals, exec_locals)
             
             # Add better error debugging
             logging.info("=" * 50)
@@ -1255,10 +1274,14 @@ def execute_custom_code(args: dict):
             available_functions = [key for key in exec_globals.keys() if callable(exec_globals[key])]
             logging.info(f"📋 Available functions: {available_functions}")
             
+            # Then execute the main code
             exec(python_code, exec_globals, exec_locals)
             
             # Get result and ensure it's JSON serializable
             result = exec_locals.get('result', 'No result variable found')
+            
+            # Extract timing information
+            step_times = exec_locals.get('_step_times', {})
             
             # Convert numpy arrays and other non-serializable types
             def make_serializable(obj):
@@ -1287,6 +1310,7 @@ def execute_custom_code(args: dict):
             return {
                 "status": "success",
                 "result": result,
+                "step_timings": step_times,  # NEW: Internal step timings
                 "python_code": python_code,
                 "user_request": user_request
             }
