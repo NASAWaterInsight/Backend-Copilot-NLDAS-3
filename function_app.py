@@ -297,3 +297,94 @@ def debug_info(req: func.HttpRequest) -> func.HttpResponse:
         status_code=200,
         mimetype="application/json"
     )
+@app.route(route="test_memory_detailed", auth_level=func.AuthLevel.ANONYMOUS)
+def test_memory_detailed(req: func.HttpRequest) -> func.HttpResponse:
+    """Force memory initialization and capture detailed error"""
+    import traceback
+    
+    diagnostics = {
+        "initialization_attempt": None,
+        "error_details": None
+    }
+    
+    try:
+        # Force a fresh initialization attempt
+        from agents.memory_manager import MemoryManager
+        
+        # Create a new instance to trigger initialization
+        test_manager = MemoryManager()
+        
+        diagnostics["initialization_attempt"] = {
+            "enabled": test_manager.enabled,
+            "memory_exists": test_manager.memory is not None,
+            "memory_type": str(type(test_manager.memory))
+        }
+        
+        # If disabled, try manual initialization to catch the error
+        if not test_manager.enabled:
+            try:
+                from mem0 import Memory
+                
+                # ✅ UPDATED CONFIG WITH LLM
+                config = {
+                    "llm": {
+                        "provider": "azure_openai",
+                        "config": {
+                            "model": os.getenv("AZURE_OPENAI_MODEL", "gpt-4o"),
+                            "temperature": 0.1,
+                            "max_tokens": 1000,
+                            "azure_kwargs": {
+                                "api_version": os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+                                "azure_deployment": os.getenv("AZURE_OPENAI_MODEL", "gpt-4o"),
+                                "azure_endpoint": os.getenv("AZURE_OPENAI_ENDPOINT"),
+                                "api_key": os.getenv("AZURE_OPENAI_API_KEY"),
+                            }
+                        }
+                    },
+                    "vector_store": {
+                        "provider": "azure_ai_search",
+                        "config": {
+                            "service_name": os.getenv("MEM0_SERVICE_NAME"),
+                            "api_key": os.getenv("MEM0_API_KEY"),
+                            "collection_name": os.getenv("MEM0_COLLECTION_NAME", "nldas_memories"),
+                            "embedding_model_dims": int(os.getenv("MEM0_EMBED_DIMS", "1536")),
+                        },
+                    },
+                    "embedder": {
+                        "provider": "azure_openai",
+                        "config": {
+                            "model": os.getenv("MEM0_EMBED_MODEL", "text-embedding-ada-002"),
+                            "embedding_dims": int(os.getenv("MEM0_EMBED_DIMS", "1536")),
+                            "azure_kwargs": {
+                                "api_version": os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+                                "azure_deployment": os.getenv("MEM0_EMBED_MODEL", "text-embedding-ada-002"),
+                                "azure_endpoint": os.getenv("AZURE_OPENAI_ENDPOINT"),
+                                "api_key": os.getenv("AZURE_OPENAI_API_KEY"),
+                            },
+                        },
+                    },
+                }
+                
+                # Try to create Memory object
+                memory = Memory.from_config(config)
+                diagnostics["initialization_attempt"]["manual_init"] = "SUCCESS"
+                
+            except Exception as init_error:
+                diagnostics["error_details"] = {
+                    "error_type": type(init_error).__name__,
+                    "error_message": str(init_error),
+                    "traceback": traceback.format_exc()
+                }
+        
+    except Exception as e:
+        diagnostics["error_details"] = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "traceback": traceback.format_exc()
+        }
+    
+    return func.HttpResponse(
+        safe_json_dumps(diagnostics),
+        status_code=200,
+        mimetype="application/json"
+    )

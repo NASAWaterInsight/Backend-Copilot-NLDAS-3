@@ -22,3 +22,4 @@ numpy
 scipy
 scikit-image
 mem0ai
+azure-search-documents

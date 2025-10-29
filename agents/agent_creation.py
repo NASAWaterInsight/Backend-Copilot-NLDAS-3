@@ -86,6 +86,11 @@ text_tool_resources = ai_search_tool.resources if ai_search_tool else None
 
 # ---------- ULTRA-SIMPLE INSTRUCTIONS WITH PROPER COLORBAR SCALING AND TIME SERIES FORMATTING ----------
 instructions = """MANDATORY: Call execute_custom_code immediately.
+MEMORY-AWARE OPERATION:
+- You may receive recent context from the user's previous queries
+- Use this context to understand implicit references like "show me the same for California"
+- Maintain consistency in visualization preferences and methodological choices
+- Build upon previous analyses when users ask comparative questions
 
 🚨 CRITICAL: Use ccrs.PlateCarree() object, NEVER use 'platecarree' string for projections.
 
@@ -158,10 +163,7 @@ elif 'mexico' in user_query_lower:
     lon_min, lon_max = -118.4, -86.7
     region_name = 'Mexico'
 else:
-    # Default to Maryland if no region detected
-    lat_min, lat_max = 38.8, 39.8
-    lon_min, lon_max = -79.5, -75.0
-    region_name = 'Maryland'
+    result = "Error: No region specified. Please specify a region (Maryland, Florida, California, Texas, Michigan, or Alaska)."
 
 # Extract year and month from user request
 import re

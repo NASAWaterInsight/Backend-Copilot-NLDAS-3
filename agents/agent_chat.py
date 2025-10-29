@@ -8,6 +8,7 @@ import time
 from .dynamic_code_generator import execute_custom_code
 import numpy as np
 import builtins
+from .memory_manager import memory_manager
 
 # Load agent info (keep existing code)
 agent_info_path = os.path.join(os.path.dirname(__file__), "../agent_info.json")
@@ -488,16 +489,48 @@ def handle_chat_request(data):
     try:
         user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
         logging.info(f"Processing chat request: {user_query}")
+        
+        # ✅ FIXED: Get user_id from request data
+        user_id = data.get("user_id", f"anonymous_{hash(user_query) % 10000}")
+        logging.info(f"👤 User ID: {user_id}")
+
+        # ✅ FIXED: Retrieve memory context BEFORE sending to agent
+        recent_memories = memory_manager.recent_context(user_id, limit=3)
+        
+        # ✅ FIXED: Search for relevant context based on query
+        relevant_memories = memory_manager.search(user_query, user_id, limit=3)
+
+        # Build enhanced query with memory context
+        memory_context = ""
+        if recent_memories or relevant_memories:
+            memory_context = "\n\n🧠 Recent context from your previous queries:\n"
+            
+            # Add recent memories
+            if recent_memories:
+                memory_context += "Recent conversations:\n"
+                for mem in recent_memories[:2]:
+                    memory_context += f"- {mem}\n"
+            
+            # Add relevant memories
+            if relevant_memories:
+                memory_context += "\nRelevant previous analyses:\n"
+                for mem in relevant_memories[:2]:
+                    mem_text = mem.get("memory", "")
+                    if mem_text:
+                        memory_context += f"- {mem_text}\n"
+
+        enhanced_query = user_query + memory_context
+        logging.info(f"📝 Enhanced query with memory: {len(memory_context)} chars of context")
 
         # Create a thread for the conversation
         thread = project_client.agents.threads.create()
         logging.info(f"Created thread: {thread.id}")
         
-        # ✅ UPDATED: Send the query naturally - let the intelligent agent decide
+        # Send the enhanced query with memory context
         message = project_client.agents.messages.create(
             thread_id=thread.id,
             role="user",
-            content=user_query  # Just send the query as-is
+            content=enhanced_query
         )
         logging.info(f"Created message: {message.id}")
         
@@ -535,12 +568,21 @@ def handle_chat_request(data):
                     # This is a text-only response (greeting, capability question, etc.)
                     text_response = extract_agent_text_response(thread.id)
                     
+                    # ✅ STORE TEXT RESPONSE IN MEMORY
+                    memory_manager.add(
+                        f"Query: {user_query}\nResponse: {text_response}",
+                        user_id,
+                        {"type": "conversation", "query": user_query}
+                    )
+                    logging.info(f"💾 Stored conversation in memory for user {user_id}")
+                    
                     response = {
                         "status": "success",
                         "content": text_response,
                         "type": "text_response",
                         "agent_id": text_agent_id,
-                        "thread_id": thread.id
+                        "thread_id": thread.id,
+                        "user_id": user_id
                     }
                     
                     return make_json_serializable(response)
@@ -552,7 +594,8 @@ def handle_chat_request(data):
                         "type": "code_execution_complete",
                         "agent_id": text_agent_id,
                         "thread_id": thread.id,
-                        "analysis_data": analysis_data
+                        "analysis_data": analysis_data,
+                        "user_id": user_id
                     }
                     
                     return make_json_serializable(response)
@@ -581,11 +624,14 @@ def handle_chat_request(data):
                                 else:
                                     function_args = json.loads(raw_arguments)
                                 
+                                # ✅ PASS USER_ID to code execution
+                                function_args["user_id"] = user_id
+                                
                                 logging.info("🚀 Executing custom code...")
                                 analysis_result = execute_custom_code(function_args)
                                 custom_code_executed = True
                                 analysis_data = analysis_result
-                                
+
                                 # Handle result
                                 if analysis_result.get("status") == "success":
                                     result_value = analysis_result.get("result")
@@ -593,6 +639,21 @@ def handle_chat_request(data):
                                     # Handle map results
                                     if isinstance(result_value, dict) and ("static_url" in result_value or "overlay_url" in result_value):
                                         logging.info("🗺️ Map result detected")
+                                        
+                                        # ✅ STORE ANALYSIS IN MEMORY BEFORE PROCESSING
+                                        extracted_info = extract_analysis_info(user_query, result_value)
+                                        
+                                        memory_manager.add_structured_analysis(
+                                            user_id=user_id,
+                                            variable=extracted_info["variable"],
+                                            region=extracted_info["region"],
+                                            date_str=extracted_info["date_str"],
+                                            bounds=result_value.get("bounds", {}),
+                                            result_url=result_value.get("static_url"),
+                                            color_range=result_value.get("color_scale")
+                                        )
+                                        
+                                        logging.info(f"💾 Stored structured analysis memory for {user_id}")
                                         
                                         enriched = normalize_map_result_dict(result_value, user_query)
                                         enriched["temperature_data"] = build_temperature_data(enriched.get("geojson", {}))
@@ -626,7 +687,8 @@ def handle_chat_request(data):
                                                 "type": "visualization_with_tiles",
                                                 "agent_id": text_agent_id,
                                                 "thread_id": thread.id,
-                                                "analysis_data": analysis_result
+                                                "analysis_data": analysis_result,
+                                                "user_id": user_id
                                             }
                                             
                                             return make_json_serializable(response)
@@ -644,12 +706,21 @@ def handle_chat_request(data):
                                                 "type": "visualization_with_overlay",
                                                 "agent_id": text_agent_id,
                                                 "thread_id": thread.id,
-                                                "analysis_data": analysis_result
+                                                "analysis_data": analysis_result,
+                                                "user_id": user_id
                                             }
                                             
                                             return make_json_serializable(response)
                                     else:
                                         # Text result
+                                        # ✅ STORE NON-MAP RESULTS IN MEMORY TOO
+                                        memory_manager.add(
+                                            f"Query: {user_query}\nResult: {str(result_value)[:200]}",
+                                            user_id,
+                                            {"type": "analysis", "query": user_query}
+                                        )
+                                        logging.info(f"💾 Stored text analysis in memory for {user_id}")
+                                        
                                         tool_outputs.append({
                                             "tool_call_id": tool_call.id,
                                             "output": json.dumps({"status": "success", "result": str(result_value)})
@@ -688,7 +759,8 @@ def handle_chat_request(data):
                     "content": f"Agent run {run.status}",
                     "type": f"run_{run.status}",
                     "agent_id": text_agent_id,
-                    "thread_id": thread.id
+                    "thread_id": thread.id,
+                    "user_id": user_id
                 }
                 
                 return make_json_serializable(response)
@@ -710,7 +782,6 @@ def handle_chat_request(data):
         logging.error(f"   Final status: {run.status}")
         logging.error(f"   Iterations: {iteration}/{max_iterations}")
         logging.error(f"   Elapsed time: {elapsed_time:.1f}s")
-        logging.error(f"   Custom code executed: {custom_code_executed}")
         
         response = {
             "status": "timeout_failure",
@@ -718,6 +789,7 @@ def handle_chat_request(data):
             "type": "timeout",
             "agent_id": text_agent_id,
             "thread_id": thread.id,
+            "user_id": user_id,
             "debug": {
                 "iterations": iteration,
                 "final_status": run.status,
@@ -732,10 +804,65 @@ def handle_chat_request(data):
         response = {
             "status": "error",
             "content": str(e),
-            "error_type": type(e).__name__
+            "error_type": type(e).__name__,
+            "user_id": data.get("user_id", "unknown")
         }
         
         return make_json_serializable(response)
+
+
+# ✅ ADD THIS HELPER FUNCTION (place it before handle_chat_request or after it)
+def extract_analysis_info(query: str, result: dict) -> dict:
+    """Extract variable, region, and date from query and result"""
+    import re
+    
+    query_lower = query.lower()
+    
+    # Extract variable
+    variable = "Tair"  # default
+    if any(word in query_lower for word in ['precipitation', 'rain', 'rainfall']):
+        variable = "Rainf"
+    elif any(word in query_lower for word in ['drought', 'spi']):
+        variable = "SPI3"
+    elif 'temperature' in query_lower or 'temp' in query_lower:
+        variable = "Tair"
+    
+    # Extract region
+    region = "unknown"
+    regions = {
+        'michigan': 'michigan',
+        'florida': 'florida',
+        'california': 'california',
+        'maryland': 'maryland',
+        'texas': 'texas',
+        'alaska': 'alaska'
+    }
+    for key, value in regions.items():
+        if key in query_lower:
+            region = value
+            break
+    
+    # Extract date
+    year_match = re.search(r'(20\d{2})', query)
+    year = int(year_match.group(1)) if year_match else 2023
+    
+    month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
+    month_match = re.search(r'(' + '|'.join(month_names) + ')', query_lower)
+    month = month_names.index(month_match.group(1)) + 1 if month_match else 6
+    
+    day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', query)
+    day = int(day_match.group(1)) if day_match and variable != "SPI3" else 15
+    
+    if variable == "SPI3":
+        date_str = f"{year}-{month:02d}"
+    else:
+        date_str = f"{year}-{month:02d}-{day:02d}"
+    
+    return {
+        "variable": variable,
+        "region": region,
+        "date_str": date_str
+    }
 
 def make_json_serializable(obj):
     """Enhanced JSON serialization that handles all Python types including mappingproxy"""
