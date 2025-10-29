@@ -17,6 +17,10 @@ matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import io
 import base64
+# Add these cache variables after the existing imports
+_KERCHUNK_FILES_CACHE = None
+_CACHE_TIMESTAMP = None
+_CACHE_DURATION = 300  # 5 minutes in seconds
 
 # --- Kerchunk container configuration ---
 KERCHUNK_CONTAINER = "kerchunk"
@@ -74,7 +78,43 @@ VARIABLE_MAPPING = {
     "drought": "SPI3",
     "precipitation_anomaly": "SPI3"
 }
-
+def _get_cached_available_files(account_name: str, account_key: str):
+    """
+    Get cached list of available kerchunk files to avoid repeated API calls
+    """
+    global _KERCHUNK_FILES_CACHE, _CACHE_TIMESTAMP
+    
+    import time
+    current_time = time.time()
+    
+    # Check if cache is valid
+    if (_KERCHUNK_FILES_CACHE is not None and 
+        _CACHE_TIMESTAMP is not None and 
+        (current_time - _CACHE_TIMESTAMP) < _CACHE_DURATION):
+        logging.info("📋 Using cached file list")
+        return _KERCHUNK_FILES_CACHE
+    
+    # Cache miss - fetch and cache
+    logging.info("🔄 Refreshing file list cache")
+    available_dates = find_available_kerchunk_files(account_name, account_key)
+    
+    # Update cache
+    _KERCHUNK_FILES_CACHE = available_dates
+    _CACHE_TIMESTAMP = current_time
+    
+    # Log availability info only on cache refresh
+    if available_dates:
+        first_date = available_dates[0]['date']
+        last_date = available_dates[-1]['date']
+        total_days = len(available_dates)
+        logging.info(f"📅 Data available: {first_date.strftime('%Y-%m-%d')} to {last_date.strftime('%Y-%m-%d')} ({total_days} days)")
+        
+        years_available = sorted(set(d['date'].year for d in available_dates))
+        months_available = sorted(set(d['date'].month for d in available_dates))
+        logging.info(f"📊 Years available: {years_available}")
+        logging.info(f"📊 Months available: {months_available}")
+    
+    return available_dates
 def get_mapped_variable(variable: str, available_vars: list):
     """
     Map a variable name to NLDAS variable name and validate it exists.
@@ -255,139 +295,7 @@ def find_available_kerchunk_files(account_name: str, account_key: str):
     available_dates.sort(key=lambda x: x["date"])
     return available_dates
 
-def load_specific_date_kerchunk(account_name: str, account_key: str, year: int, month: int, day: int):
-    """
-    Load kerchunk data for a specific date with enhanced error handling
-    UPDATED: NO DEFAULT VALUES - all parameters must be explicitly provided
-    """
-    # Format the date as NLDAS expects
-    nldas_date, dt = parse_date_to_nldas_format(year, month, day)
-    
-    # Basic validation only
-    if month < 1 or month > 12:
-        raise ValueError(f"Month must be 1-12. Requested: {month}")
-    
-    if day < 1 or day > 31:
-        raise ValueError(f"Day must be 1-31. Requested: {day}")
-    
-    # Build expected filename
-    expected_filename = f"kerchunk_NLDAS_FOR0010_H.{nldas_date}.030.beta.json"
-    expected_path = f"{KERCHUNK_CONTAINER}/{expected_filename}"
-    
-    available_dates = []
-    
-    try:
-        # Get list of available dates to handle gracefully
-        try:
-            available_dates = find_available_kerchunk_files(account_name, account_key)
-            
-            # ENHANCED: Log data availability for debugging
-            if available_dates:
-                first_date = available_dates[0]['date']
-                last_date = available_dates[-1]['date']
-                total_days = len(available_dates)
-                logging.info(f"📅 Data available: {first_date.strftime('%Y-%m-%d')} to {last_date.strftime('%Y-%m-%d')} ({total_days} days)")
-                
-                # Check coverage by month and year
-                years_available = sorted(set(d['date'].year for d in available_dates))
-                months_available = sorted(set(d['date'].month for d in available_dates))
-                logging.info(f"📊 Years available: {years_available}")
-                logging.info(f"📊 Months available: {months_available}")
-            
-        except Exception as find_error:
-            logging.warning(f"Could not get available dates list: {find_error}")
-        
-        # ENHANCED: Try to load the exact file first
-        fs = _kerchunk_fs(account_name, account_key)
-        
-        try:
-            # Check if the exact file exists
-            if fs.exists(expected_path):
-                logging.info(f"✅ Found exact file: {expected_filename}")
-                refs, blob_used, is_combined = _discover_kerchunk_index_for_date(account_name, account_key, expected_path)
-            else:
-                # File doesn't exist - find closest or report what's available
-                if available_dates:
-                    requested_date_available = any(
-                        d["date"].date() == dt.date() for d in available_dates
-                    )
-                    
-                    if not requested_date_available:
-                        # Find closest available date
-                        logging.warning(f"Date {dt.date()} not available. Finding closest date...")
-                        target_date = dt
-                        closest = min(available_dates, key=lambda x: abs((x["date"] - target_date).days))
-                        days_diff = abs((closest["date"] - target_date).days)
-                        
-                        if days_diff > 30:  # More flexible - allow up to 30 days difference
-                            # Show what's actually available
-                            years_available = sorted(set(d['date'].year for d in available_dates))
-                            months_available = sorted(set(d['date'].month for d in available_dates))
-                            month_names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-                            available_months = [month_names[m-1] for m in months_available if 1 <= m <= 12]
-                            
-                            available_range = f"{available_dates[0]['date'].date()} to {available_dates[-1]['date'].date()}"
-                            raise FileNotFoundError(
-                                f"Date {dt.date()} not available. Closest date is {closest['date'].date()} ({days_diff} days away). "
-                                f"Available years: {years_available}. "
-                                f"Available months: {', '.join(available_months)}. "
-                                f"Date range: {available_range}"
-                            )
-                        
-                        # Use closest date
-                        expected_path = closest["path"]
-                        expected_filename = closest["filename"]
-                        logging.info(f"Using closest available date: {closest['date'].date()} (originally requested: {dt.date()})")
-                        
-                        refs, blob_used, is_combined = _discover_kerchunk_index_for_date(account_name, account_key, expected_path)
-                    else:
-                        # Date is available, find the correct path
-                        matching_date = next(d for d in available_dates if d["date"].date() == dt.date())
-                        expected_path = matching_date["path"]
-                        expected_filename = matching_date["filename"]
-                        logging.info(f"✅ Found matching date: {dt.date()}")
-                        
-                        refs, blob_used, is_combined = _discover_kerchunk_index_for_date(account_name, account_key, expected_path)
-                else:
-                    raise FileNotFoundError(f"No kerchunk data found in container. Cannot load {dt.date()}")
-        
-        except FileNotFoundError:
-            raise
-        except Exception as load_error:
-            logging.error(f"Failed to load kerchunk file: {load_error}")
-            raise Exception(f"Failed to load kerchunk data: {str(load_error)}")
-        
-        # Create the dataset
-        debug = {
-            "kerchunk_container": KERCHUNK_CONTAINER,
-            "kerchunk_blob_used": blob_used,
-            "kerchunk_is_combined": is_combined,
-            "kerchunk_ref_count": len(refs.get("refs", {})),
-            "requested_date": dt.date(),
-            "available_date_range": f"{available_dates[0]['date'].date()} to {available_dates[-1]['date'].date()}" if available_dates else "unknown"
-        }
 
-        mapper = fsspec.get_mapper(
-            "reference://",
-            fo=refs,
-            remote_protocol="az",
-            remote_options={"account_name": account_name, "account_key": account_key},
-        )
-
-        ds = xr.open_dataset(mapper, engine="zarr", backend_kwargs={"consolidated": False})
-        return ds, debug
-        
-    except Exception as e:
-        # ENHANCED: Dynamic error message based on what's available
-        available_info = "No data availability information"
-        if available_dates:
-            years_available = sorted(set(d['date'].year for d in available_dates))
-            months_available = sorted(set(d['date'].month for d in available_dates))
-            available_info = f"Available years: {years_available}, months: {months_available}"
-        
-        error_msg = f"Failed to load kerchunk data for {dt.date()}: {str(e)}. {available_info}"
-        logging.error(error_msg)
-        raise Exception(error_msg)
 
 def _discover_kerchunk_index_for_date(account_name: str, account_key: str, blob_path: str):
     """
@@ -457,6 +365,50 @@ def save_plot_to_blob_simple(fig, filename: str, account_key: str):
     except Exception as e:
         logging.error(f"Failed to save plot to blob storage: {e}")
         raise Exception(f"Failed to save plot to blob storage: {str(e)}")
+def load_specific_date_kerchunk(account_name: str, account_key: str, year: int, month: int, day: int):
+    """
+    FAST VERSION - Direct file access like manual code
+    Minimal validation, direct file reading
+    """
+    # Basic validation only
+    if month < 1 or month > 12:
+        raise ValueError(f"Month must be 1-12. Requested: {month}")
+    if day < 1 or day > 31:
+        raise ValueError(f"Day must be 1-31. Requested: {day}")
+    
+    # Direct path construction (like your manual code)
+    nldas_date = f"A{year:04d}{month:02d}{day:02d}"
+    expected_filename = f"kerchunk_NLDAS_FOR0010_H.{nldas_date}.030.beta.json"
+    expected_path = f"{KERCHUNK_CONTAINER}/{expected_filename}"
+    
+    # ADD THIS LINE - Simple progress logging
+    logging.info(f"📁 Loading {expected_filename}")
+    
+    # Direct file access (like your manual code)
+    fs = _kerchunk_fs(account_name, account_key)
+    
+    try:
+        # FAST: Direct file read (no validation overhead)
+        with fs.open(expected_path, 'r') as f:
+            refs = json.load(f)
+        
+        # Skip complex debug info - just the essentials
+        debug = {"file_used": expected_filename}
+        
+        # Direct dataset creation
+        mapper = fsspec.get_mapper(
+            "reference://",
+            fo=refs,
+            remote_protocol="az",
+            remote_options={"account_name": account_name, "account_key": account_key},
+        )
+        
+        ds = xr.open_dataset(mapper, engine="zarr", backend_kwargs={"consolidated": False})
+        return ds, debug
+        
+    except Exception as e:
+        # Simple error - no extensive fallback logic
+        raise Exception(f"Failed to load {expected_filename}: {str(e)}")
 
 def handle_weather_function_call(function_args: dict):
     """

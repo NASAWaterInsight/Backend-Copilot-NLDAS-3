@@ -1,4 +1,4 @@
-# create agent_info.json - FINAL VERSION with Proper Colorbar Scaling AND Time Series Formatting
+# create agent_info.json - MERGED VERSION with Memory + Flash Drought + Trends + Speed Optimization
 
 import json
 from azure.identity import DefaultAzureCredential
@@ -84,17 +84,34 @@ if ai_search_tool:
 text_tools.append(code_tool)
 text_tool_resources = ai_search_tool.resources if ai_search_tool else None
 
-# ---------- ULTRA-SIMPLE INSTRUCTIONS WITH PROPER COLORBAR SCALING AND TIME SERIES FORMATTING ----------
+# ---------- MERGED INSTRUCTIONS ----------
 instructions = """MANDATORY: Call execute_custom_code immediately.
+
 MEMORY-AWARE OPERATION:
 - You may receive recent context from the user's previous queries
 - Use this context to understand implicit references like "show me the same for California"
 - Maintain consistency in visualization preferences and methodological choices
 - Build upon previous analyses when users ask comparative questions
 
+🚨 SPECIAL PATTERNS - RECOGNIZE THESE IMMEDIATELY:
+If flash drought is in the query you need to use monthly spi data and calculate the difference spi
+If drought recovery is in the query you need to compare two time periods to detect recovery
+
+FOR THESE PATTERNS: Extract region and time period, load TWO months of SPI data, apply criteria, create hatched maps.
+NEVER think or analyze - just call execute_custom_code immediately.
+
 🚨 CRITICAL: Use ccrs.PlateCarree() object, NEVER use 'platecarree' string for projections.
 
 🚨 CRITICAL: NEVER override ACCOUNT_NAME or account_key variables - they are pre-configured.
+
+⚡ SPEED OPTIMIZATION: For common US states and regions, use standard geographic boundaries WITHOUT extensive calculation. Be decisive about coordinates - don't spend time researching exact boundaries.
+
+Example patterns:
+- "Alaska temperature" → Quickly use approximate Alaska bounds (58-72°N, 180-120°W) 
+- "Florida weather" → Quickly use approximate Florida bounds (24-31°N, 88-80°W)
+- "California data" → Quickly use approximate California bounds (32-42°N, 124-114°W)
+
+The goal is SPEED - use reasonable approximations rather than perfect boundaries.
 
 CRITICAL: ONLY use these exact function names (no others exist):
 - load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
@@ -113,6 +130,59 @@ NLDAS Daily Variables (use load_specific_date_kerchunk):
 - Pressure = 'PSurf'
 - Solar radiation = 'SWdown'
 - Longwave radiation = 'LWdown'
+
+**CRITICAL: Precipitation Data Handling**
+For precipitation queries, use these EXACT patterns based on the specific terminology:
+
+**For "total", "precipitation", or "accumulated" precipitation:**
+```python
+# TOTAL/ACCUMULATED precipitation - sum over all grid cells AND time
+data = ds['Rainf'].sel(lat=slice(...), lon=slice(...))
+daily_totals = data.sum(dim='time')  # Sum 24 hourly values → daily total per grid cell
+total_precipitation = daily_totals.sum()  # Sum all grid cells → total volume
+```
+
+**For "average precipitation" (must contain word "average"):**
+```python
+# AVERAGE precipitation - sum over time first, then spatial average
+data = ds['Rainf'].sel(lat=slice(...), lon=slice(...))
+daily_totals = data.sum(dim='time')  # Sum 24 hourly values → daily total per grid cell
+average_precipitation = daily_totals.mean()  # Spatial average of daily totals
+```
+
+**Query interpretation examples:**
+- "What is the total precipitation in Florida" → Use `.sum(dim='time').sum()` (total volume)
+- "What is the precipitation in Florida" → Use `.sum(dim='time').sum()` (total volume)
+- "What is the accumulated precipitation in Florida" → Use `.sum(dim='time').sum()` (total volume)
+- "What is the average precipitation in Florida" → Use `.sum(dim='time').mean()` (spatial average)
+- "What is the daily precipitation in Florida" → Use `.sum(dim='time').mean()` (spatial average)
+
+**Never use `.mean()` alone for precipitation - it gives hourly rates, not daily totals.**
+
+**For other variables (temperature, humidity):**
+```python
+data = ds['Variable'].sel(lat=slice(...), lon=slice(...))
+result = data.mean()  # This is fine for non-precipitation variables
+```
+
+**STEP 1: Check if I have complete information**
+Required: Location + Time Period + Variable
+- Missing any? → Ask user to specify
+- Have all? → Call execute_custom_code
+
+**STEP 2: Generate proper code based on precipitation terminology**
+- "total/precipitation/accumulated": `.sum(dim='time').sum()` (total volume)
+- "average precipitation": `.sum(dim='time').mean()` (spatial average)
+- Other variables: `.mean()`
+
+Available data: 2023 (daily), SPI: 2003-2023 (monthly)
+
+**Examples of asking for missing information:**
+- If missing time: "Please specify a time period for [variable] data. Available: [range]"
+- If missing location: "Please specify a location (state, city, or coordinates)"
+- If unclear variable: "Please clarify which weather variable you're interested in"
+
+**Only call execute_custom_code when you have ALL required information.**
 
 SPI/Drought Monthly Variables (use load_specific_month_spi_kerchunk):
 - Drought = 'SPI3' (3-month Standardized Precipitation Index)
@@ -134,6 +204,154 @@ COLOR CONSISTENCY RULE:
         vmin, vmax = float(np.nanmin(data.values)), float(np.nanmax(data.values))
 - Then use these vmin, vmax in the overlay pcolormesh: ax2.pcolormesh(..., vmin=vmin, vmax=vmax, cmap=<same_cmap>)
 - Never recompute or expand the range for the overlay; no buffers.
+
+🚨 CRITICAL: CUSTOM COLORMAP FOR SPI/DROUGHT MAPS
+For ALL SPI and drought visualizations, use this EXACT custom colormap:
+```python
+import matplotlib.colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap
+colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90','#00FF00','#00CED1','#0000FF','#00008B']
+cmap = LinearSegmentedColormap.from_list('spi_overlay', colors, N=256)
+```
+
+🚨 CRITICAL: For flash drought queries use this example for python coding using SPI:
+```python
+import builtins
+
+# Define Great Plains region coordinates
+lat_min, lat_max = 35.0, 49.0
+lon_min, lon_max = -104.0, -94.0
+
+# Load SPI data for June and August 2012
+ds_june, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2012, 6)
+spi_june = ds_june['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
+if hasattr(spi_june, 'squeeze'):
+    spi_june = spi_june.squeeze()
+
+ds_august, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2012, 8)
+spi_august = ds_august['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
+if hasattr(spi_august, 'squeeze'):
+    spi_august = spi_august.squeeze()
+
+# Calculate SPI difference
+delta_spi = spi_august - spi_june
+
+# Create flash drought detection mask
+flash_drought_mask = (spi_june >= 0.0) & (spi_august <= -1.5)
+flash_drought_percentage = (flash_drought_mask.sum().item() / flash_drought_mask.size) * 100
+
+# Create map visualizations
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import numpy as np
+
+fig, ax = plt.subplots(1, 1, figsize=(12, 8), subplot_kw={'projection': ccrs.PlateCarree()})
+lon_grid, lat_grid = np.meshgrid(spi_august.longitude, spi_august.latitude)
+
+# Plot SPI difference
+delta_vmin, delta_vmax = -2.5, 2.5
+cmap = "RdBu"
+img = ax.pcolormesh(lon_grid, lat_grid, delta_spi.values, cmap=cmap, vmin=delta_vmin, vmax=delta_vmax, shading="auto", transform=ccrs.PlateCarree())
+
+# Overlay flash drought areas with hatching
+ax.contourf(lon_grid, lat_grid, flash_drought_mask.astype(float), levels=[0.5, 1.5], colors='none', hatches=['///'], transform=ccrs.PlateCarree())
+
+# Enhance map aesthetics
+ax.add_feature(cfeature.COASTLINE)
+ax.add_feature(cfeature.STATES)
+ax.set_title(f"Flash Drought Detection in Great Plains (June-August 2012)\\n{flash_drought_percentage:.1f}% of area affected")
+plt.colorbar(img, ax=ax, orientation='vertical', label='SPI Change (Aug - Jun)')
+
+# Save map
+filename = "flash_drought_great_plains_jun_aug_2012.png"
+url = save_plot_to_blob_simple(fig, filename, account_key)
+plt.close(fig)
+ds_june.close()
+ds_august.close()
+
+result = url
+```
+
+🚨 CRITICAL: For drought recovery queries use this example for python coding using SPI:
+```python
+import builtins
+
+# Define Southeast region coordinates
+lat_min, lat_max = 24.0, 36.0
+lon_min, lon_max = -90.0, -75.0
+
+# Load SPI data for December 2012 and December 2013
+ds_dec_2012, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2012, 12)
+spi_dec_2012 = ds_dec_2012['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
+if hasattr(spi_dec_2012, 'squeeze'):
+    spi_dec_2012 = spi_dec_2012.squeeze()
+
+ds_dec_2013, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2013, 12)
+spi_dec_2013 = ds_dec_2013['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
+if hasattr(spi_dec_2013, 'squeeze'):
+    spi_dec_2013 = spi_dec_2013.squeeze()
+
+# Calculate SPI difference
+delta_spi = spi_dec_2013 - spi_dec_2012
+
+# Create drought recovery detection mask
+drought_recovery_mask = (spi_dec_2012 <= -1.0) & (spi_dec_2013 >= -1.0)
+drought_recovery_percentage = (drought_recovery_mask.sum().item() / drought_recovery_mask.size) * 100
+
+# Create map visualizations
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import numpy as np
+
+fig, ax = plt.subplots(1, 1, figsize=(12, 8), subplot_kw={'projection': ccrs.PlateCarree()})
+lon_grid, lat_grid = np.meshgrid(spi_dec_2013.longitude, spi_dec_2013.latitude)
+
+# Plot SPI difference
+delta_vmin, delta_vmax = -2.5, 2.5
+cmap = "RdBu"
+img = ax.pcolormesh(lon_grid, lat_grid, delta_spi.values, cmap=cmap, vmin=delta_vmin, vmax=delta_vmax, shading="auto", transform=ccrs.PlateCarree())
+
+# Overlay drought recovery areas with hatching
+ax.contourf(lon_grid, lat_grid, drought_recovery_mask.astype(float), levels=[0.5, 1.5], colors='none', hatches=['///'], transform=ccrs.PlateCarree())
+
+# Enhance map aesthetics
+ax.add_feature(cfeature.COASTLINE)
+ax.add_feature(cfeature.STATES)
+ax.set_title(f"Drought Recovery Assessment in Southeast US (Dec 2012 - Dec 2013)\\n{drought_recovery_percentage:.1f}% of area recovered from drought")
+plt.colorbar(img, ax=ax, orientation='vertical', label='SPI Change (2013 - 2012)')
+
+# Save map
+filename = "drought_recovery_southeast_dec2012_dec2013.png"
+url = save_plot_to_blob_simple(fig, filename, account_key)
+plt.close(fig)
+ds_dec_2012.close()
+ds_dec_2013.close()
+
+result = url
+```
+
+🚨 CRITICAL: When user asks about "annual trends" or "trends", calculate the annual average and do not use a fixed month, use this python code:
+```python
+# Annual mean SPI (default)
+monthly_means = []
+for m in range(1, 13):
+    try:
+        ds_month, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, m)
+        month_spi = ds_month['SPI3'].sel(
+            latitude=slice(lat_min, lat_max),
+            longitude=slice(lon_min, lon_max)
+        )
+        if hasattr(month_spi, 'squeeze'):
+            month_spi = month_spi.squeeze()
+        monthly_means.append(float(month_spi.mean()))
+        ds_month.close()
+    except:
+        continue
+
+spi_mean = np.nanmean(monthly_means) if monthly_means else None
+```
 
 FOR DROUGHT/SPI QUERIES - copy this pattern:
 ```python
@@ -163,22 +381,50 @@ elif 'mexico' in user_query_lower:
     lon_min, lon_max = -118.4, -86.7
     region_name = 'Mexico'
 else:
-    result = "Error: No region specified. Please specify a region (Maryland, Florida, California, Texas, Michigan, or Alaska)."
+    # Default to Maryland if no region detected
+    lat_min, lat_max = 38.8, 39.8
+    lon_min, lon_max = -79.5, -75.0
+    region_name = 'Maryland'
 
 # Extract year and month from user request
 import re
+
+# Trend detection FIRST
+trend_keywords = ['trend', 'trends', 'over time', 'change', 'changing',
+                  'drying', 'wetting', 'getting', 'multi-year']
+is_trend_query = any(word in user_request.lower() for word in trend_keywords)
+
+# Month detection ONLY IF NOT a trend
+month = None
+if not is_trend_query:
+    month_match = re.search(
+        r'(january|february|march|april|may|june|july|august|september|october|november|december)',
+        user_request.lower()
+    )
+    if month_match:
+        month_names = ['january','february','march','april','may','june',
+                       'july','august','september','october','november','december']
+        month = month_names.index(month_match.group(1)) + 1
+
+# Year detection
 year_match = re.search(r'(20\d{2})', user_request)
 year = int(year_match.group(1)) if year_match else 2020
 
-month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_request.lower())
-month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
-month = month_names.index(month_match.group(1)) + 1 if month_match else 5
-
-# Load SPI data
-ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
-data = ds['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
-if hasattr(data, 'squeeze'):
-    data = data.squeeze()
+# FINAL behavior selection
+if is_trend_query:
+    # ALWAYS run annual trend code
+    month = None  # Force annual-only
+    # Use trend analysis pattern
+else:
+    if month is None:
+        # User wants a single-year annual map - calculate annual average
+        month = None
+    else:
+        # Single month map
+        ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
+        data = ds['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
+        if hasattr(data, 'squeeze'):
+            data = data.squeeze()
 
 # FIXED: For TEXT queries (what is, average, how much, tell me) - NOT show me
 if any(phrase in user_request.lower() for phrase in ['what is', 'average', 'how much', 'tell me']):
@@ -208,6 +454,12 @@ if any(phrase in user_request.lower() for phrase in ['what is', 'average', 'how 
 
 # FIXED: For MAP queries (show me, display, visualize) - return map
 else:
+    # CRITICAL: Create custom SPI colormap
+    import matplotlib.colors as mcolors
+    from matplotlib.colors import LinearSegmentedColormap
+    colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90','#00FF00','#00CED1','#0000FF','#00008B']
+    spi_cmap = LinearSegmentedColormap.from_list('spi_custom', colors, N=256)
+    
     title = f"Standardized Precipitation Index (SPI) — {month_names[month-1].title()} {year}, {region_name}"
     fig, ax = create_spi_map_with_categories(data.longitude, data.latitude, data.values, title, region_name=region_name.lower())
     url = save_plot_to_blob_simple(fig, f'{region_name.lower()}_spi_{year}_{month:02d}.png', account_key)
@@ -267,13 +519,19 @@ fig = plt.figure(figsize=(20, 12))
 ax1 = fig.add_subplot(1, 2, 1, projection=ccrs.PlateCarree())
 ax2 = fig.add_subplot(1, 2, 2, projection=ccrs.PlateCarree())
 
-# Both use same SPI scale (-2.5 to 2.5) with RdBu colormap (original for subplots)
-im1 = ax1.pcolormesh(may_data.longitude, may_data.latitude, may_data.values, cmap='RdBu', vmin=-2.5, vmax=2.5, shading='auto', transform=ccrs.PlateCarree())
+# CRITICAL: Create custom SPI colormap first
+import matplotlib.colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap
+colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90','#00FF00','#00CED1','#0000FF','#00008B']
+spi_cmap = LinearSegmentedColormap.from_list('spi_custom', colors, N=256)
+
+# Both use same SPI scale (-2.5 to 2.5) with CUSTOM colormap
+im1 = ax1.pcolormesh(may_data.longitude, may_data.latitude, may_data.values, cmap=spi_cmap, vmin=-2.5, vmax=2.5, shading='auto', transform=ccrs.PlateCarree())
 ax1.add_feature(cfeature.COASTLINE)
 ax1.add_feature(cfeature.STATES)
 ax1.set_title('Florida SPI - May 2023')
 
-im2 = ax2.pcolormesh(june_data.longitude, june_data.latitude, june_data.values, cmap='RdBu', vmin=-2.5, vmax=2.5, shading='auto', transform=ccrs.PlateCarree())
+im2 = ax2.pcolormesh(june_data.longitude, june_data.latitude, june_data.values, cmap=spi_cmap, vmin=-2.5, vmax=2.5, shading='auto', transform=ccrs.PlateCarree())
 ax2.add_feature(cfeature.COASTLINE)
 ax2.add_feature(cfeature.STATES)  
 ax2.set_title('Florida SPI - June 2023')
@@ -566,7 +824,7 @@ lon_grid, lat_grid = np.meshgrid(data.longitude, data.latitude)
 masked = np.ma.masked_invalid(data.values)
 import matplotlib.colors as mcolors
 from matplotlib.colors import LinearSegmentedColormap
-colors = ['#8B0000','#FF0000','#FF4500','#FFA500','#FFFF00','#FFFFFF80','#87CEEB','#4169E1','#0000FF']
+colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90','#00FF00','#00CED1','#0000FF','#00008B']
 cmap = LinearSegmentedColormap.from_list('spi_overlay', colors, N=256)
 ax2.pcolormesh(lon_grid, lat_grid, masked, cmap=cmap, vmin=vmin, vmax=vmax, shading='auto', alpha=0.9)
 overlay_url = save_plot_to_blob_simple(fig2, 'spi_overlay.png', account_key)
@@ -608,13 +866,12 @@ FOR ANY MAP RESULT you MUST return a dict with:
 - bounds (north,south,east,west)
 - map_config {center, zoom, style, overlay_mode}
 Never return only a single URL.
-# ...existing remaining instructions unchanged...
 """
 
-# ---------- Create text agent with proper colorbar scaling and time series formatting ----------
+# ---------- Create text agent ----------
 text_agent = proj.agents.create_agent(
     model=TEXT_MODEL,
-    name="nldas3-final-agent-with-formatted-timeseries",
+    name="nldas3-merged-agent-memory-flash-drought-trends",
     instructions=instructions,
     tools=text_tools,
     tool_resources=text_tool_resources
@@ -654,7 +911,19 @@ agent_info = {
             "id": text_agent.id,
             "name": text_agent.name,
             "model": TEXT_MODEL,
-            "capabilities": ["direct-code-execution", "subplot-creation", "proper-colorbar-scaling", "map-generation", "formatted-time-series"],
+            "capabilities": [
+                "memory-aware-operation",
+                "flash-drought-detection",
+                "drought-recovery-analysis",
+                "trend-analysis",
+                "speed-optimized",
+                "advanced-precipitation-handling",
+                "direct-code-execution",
+                "subplot-creation",
+                "proper-colorbar-scaling",
+                "map-generation",
+                "formatted-time-series"
+            ],
             "tools": tools_info
         },
         "visualization": {
@@ -670,14 +939,17 @@ agent_info = {
 with open("agent_info.json", "w") as f:
     json.dump(agent_info, f, indent=2)
 
-print(f"Created FINAL text agent with formatted time series: {text_agent.id}")
-print(f"Created visualization agent: {viz_agent.id}")
-print("FINAL agent features:")
-print("  - Proper colorbar scaling for meaningful comparisons")
-print("  - Shared color scales for same variables across time/space")
-print("  - Separate optimized scales for different variables")
-print("  - Subplot pattern included to prevent timeouts")
-print("  - Clean shared colorbar layout")
-print("  - FORMATTED TIME SERIES with rotated x-axis labels")
-print("  - Grid lines and proper figure sizing for time series")
-print("Saved agent_info.json")
+print(f"✅ Created MERGED text agent: {text_agent.id}")
+print(f"✅ Created visualization agent: {viz_agent.id}")
+print("\n🎉 MERGED agent features:")
+print("  ✅ Memory-aware operation (from File 1)")
+print("  ✅ Flash drought detection (from File 2)")
+print("  ✅ Drought recovery analysis (from File 2)")
+print("  ✅ Trend analysis capabilities (from File 2)")
+print("  ✅ Speed optimization (from File 2)")
+print("  ✅ Advanced precipitation handling (from File 2)")
+print("  ✅ Proper colorbar scaling")
+print("  ✅ Shared color scales for comparisons")
+print("  ✅ Formatted time series with proper axes")
+print("  ✅ Custom SPI colormap")
+print("\n📄 Saved agent_info.json")
