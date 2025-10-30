@@ -754,7 +754,7 @@ def handle_chat_request(data):
         
         # ===== ENHANCED EXECUTION LOOP =====
         t8 = time.time()
-        max_iterations = 15
+        max_iterations = 20
         iteration = 0
         analysis_data = None
         custom_code_executed = False
@@ -1164,34 +1164,56 @@ def handle_chat_request(data):
         
         return make_json_serializable(response)
 
-def make_json_serializable(obj):
-    """Enhanced JSON serialization that handles all Python types including mappingproxy"""
+def make_json_serializable(obj, _seen=None):
+    """Enhanced JSON serialization that handles all Python types including circular references"""
     import types
     from datetime import datetime, date
     
-    if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
-    elif isinstance(obj, dict):
-        return {k: make_json_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [make_json_serializable(item) for item in obj]
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, (np.integer, np.int64, np.int32)):
-        return int(obj)
-    elif isinstance(obj, (np.floating, np.float64, np.float32)):
-        return float(obj)
-    elif isinstance(obj, np.bool_):
-        return bool(obj)
-    elif isinstance(obj, types.MappingProxyType):
-        # Convert mappingproxy to regular dict
-        return {k: make_json_serializable(v) for k, v in obj.items()}
-    elif hasattr(obj, '__dict__'):
-        return make_json_serializable(obj.__dict__)
-    elif hasattr(obj, '_asdict'):  # namedtuple
-        return make_json_serializable(obj._asdict())
-    else:
-        try:
+    # Track seen objects to prevent infinite recursion
+    if _seen is None:
+        _seen = set()
+    
+    # Check if we've seen this object before (circular reference)
+    obj_id = id(obj)
+    if obj_id in _seen:
+        return f"<circular reference to {type(obj).__name__}>"
+    
+    # Add basic types that don't need recursion tracking
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+    
+    # Mark this object as seen
+    _seen.add(obj_id)
+    
+    try:
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        elif isinstance(obj, dict):
+            return {k: make_json_serializable(v, _seen) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [make_json_serializable(item, _seen) for item in obj]
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        elif isinstance(obj, types.MappingProxyType):
+            return {k: make_json_serializable(v, _seen) for k, v in obj.items()}
+        elif hasattr(obj, '__dict__'):
+            # Avoid infinite recursion on complex objects
+            try:
+                return {k: make_json_serializable(v, _seen) for k, v in obj.__dict__.items() if not k.startswith('_')}
+            except:
+                return str(obj)
+        elif hasattr(obj, '_asdict'):  # namedtuple
+            return make_json_serializable(obj._asdict(), _seen)
+        else:
             return str(obj)
-        except:
-            return f"<non-serializable: {type(obj).__name__}>"
+    except Exception as e:
+        return f"<serialization error: {type(obj).__name__}>"
+    finally:
+        # Remove from seen set after processing
+        _seen.discard(obj_id)

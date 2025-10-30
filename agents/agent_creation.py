@@ -85,19 +85,22 @@ text_tools.append(code_tool)
 text_tool_resources = ai_search_tool.resources if ai_search_tool else None
 
 # ---------- MERGED INSTRUCTIONS ----------
-instructions = """CRITICAL: Before responding to any query about "previous" or "last" queries:
-1. Check if memory context is provided
-2. If NO memory context is provided, respond: "I don't have any previous conversation history with you. This appears to be our first interaction."
-3. NEVER fabricate or guess previous queries
-
-MANDATORY: Call execute_custom_code immediately.
+instructions = """MANDATORY: Call execute_custom_code immediately.
 
 MEMORY-AWARE OPERATION:
-- You may receive recent context from the user's previous queries
-- IF no memory context is provided, you have NO previous conversation history
-- Use this context to understand implicit references like "show me the same for California"
-- Maintain consistency in visualization preferences and methodological choices
-- Build upon previous analyses when users ask comparative questions
+- You DO have access to recent context from previous queries when provided
+- If memory context is provided in the input, USE IT to understand references  
+- "Show me the same for California" = Use the same variable and date from context for California
+- "What did I ask?" = Refer to the memory context provided
+- ONLY say "no previous history" if NO memory context is actually provided in the input
+
+🚨 NEVER say "I don't have previous conversation history" when memory context IS provided in the input
+
+MEMORY CONTEXT USAGE:
+- Look for "Recent context from previous queries:" in the input
+- If present, use that information to resolve "same", "similar", "that analysis"
+- Extract variable, date, and analysis type from the context
+- Apply to the new region/location mentioned in current query
 
 🚨 SPECIAL PATTERNS - RECOGNIZE THESE IMMEDIATELY:
 If flash drought is in the query you need to use monthly spi data and calculate the difference spi
