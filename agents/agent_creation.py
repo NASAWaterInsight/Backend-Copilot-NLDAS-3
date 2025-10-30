@@ -113,6 +113,15 @@ NEVER think or analyze - just call execute_custom_code immediately.
 
 🚨 CRITICAL: NEVER override ACCOUNT_NAME or account_key variables - they are pre-configured.
 
+🚨 ABSOLUTELY CRITICAL - MAP RESULT FORMAT: For ANY query that creates a map visualization, you MUST return:
+result = {
+    "static_url": static_url,
+    "overlay_url": overlay_url,
+    "geojson": geojson,
+    "bounds": bounds,
+    "map_config": map_config
+}
+NEVER return just a URL string like result = url. This breaks the tile system. The frontend needs the structured format to create interactive tiles.
 ⚡ SPEED OPTIMIZATION: For common US states and regions, use standard geographic boundaries WITHOUT extensive calculation. Be decisive about coordinates - don't spend time researching exact boundaries.
 
 Example patterns:
@@ -279,7 +288,13 @@ plt.close(fig)
 ds_june.close()
 ds_august.close()
 
-result = url
+result = {
+    "static_url": url,
+    "overlay_url": url,  # Same for now
+    "geojson": {"type": "FeatureCollection", "features": []},
+    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
+    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+}
 ```
 
 🚨 CRITICAL: For drought recovery queries use this example for python coding using SPI:
@@ -338,7 +353,13 @@ plt.close(fig)
 ds_dec_2012.close()
 ds_dec_2013.close()
 
-result = url
+result = {
+    "static_url": url,
+    "overlay_url": url,  # Same for now
+    "geojson": {"type": "FeatureCollection", "features": []},
+    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
+    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+}
 ```
 
 🚨 CRITICAL: When user asks about "annual trends" or "trends", calculate the annual average and do not use a fixed month, use this python code:
@@ -474,7 +495,13 @@ else:
     url = save_plot_to_blob_simple(fig, f'{region_name.lower()}_spi_{year}_{month:02d}.png', account_key)
     plt.close(fig)
     ds.close()
-    result = url
+    result = {
+    "static_url": url,
+    "overlay_url": url,  # Same for now
+    "geojson": {"type": "FeatureCollection", "features": []},
+    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
+    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+}
 ```
 
 FOR SPI MULTI-YEAR ANIMATION (show drought trends over time):
@@ -488,7 +515,13 @@ try:
     anim, fig = create_spi_multi_year_animation(2010, 2020, 5, lat_min, lat_max, lon_min, lon_max, 'California')
     url = save_animation_to_blob(anim, 'california_may_spi_2010_2020.gif', account_key)
     plt.close(fig)
-    result = url
+    result = {
+    "static_url": url,
+    "overlay_url": url,  # Same for now
+    "geojson": {"type": "FeatureCollection", "features": []},
+    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
+    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+}
     
 except Exception as e:
     print(f"SPI animation failed: {e}")
@@ -501,7 +534,13 @@ except Exception as e:
     url = save_plot_to_blob_simple(fig, 'california_may_2020_spi.png', account_key)
     plt.close(fig)
     ds.close()
-    result = f"Multi-year animation failed, showing May 2020: {url}"
+    esult = {
+    "static_url": url,
+    "overlay_url": url,
+    "geojson": {"type": "FeatureCollection", "features": []},
+    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
+    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+}
 ```
 
 FOR SPI MONTHLY COMPARISON (instead of animation):
@@ -562,7 +601,13 @@ url = save_plot_to_blob_simple(fig, 'florida_spi_may_june_2023.png', account_key
 plt.close(fig)
 ds_may.close()
 ds_june.close()
-result = url
+result = {
+    "static_url": url,
+    "overlay_url": url,  # Same for now
+    "geojson": {"type": "FeatureCollection", "features": []},
+    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
+    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+}
 ```
 
 FOR TIME SERIES PLOTS - copy this pattern:
@@ -661,7 +706,13 @@ cbar = plt.colorbar(im2, ax=[ax1, ax2], shrink=0.8, pad=0.02, label='Temperature
 url = save_plot_to_blob_simple(fig, 'subplot_florida_maryland_temp.png', account_key)
 plt.close(fig)
 ds.close()
-result = url
+result = {
+    "static_url": url,
+    "overlay_url": url,  # Same for now
+    "geojson": {"type": "FeatureCollection", "features": []},
+    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
+    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+}
 ```
 
 FOR SINGLE PRECIPITATION MAPS - copy this pattern:
@@ -793,7 +844,13 @@ try:
     anim, fig = create_multi_day_animation(2023, 1, 1, 5, 'Tair', lat_min, lat_max, lon_min, lon_max, 'Region')
     url = save_animation_to_blob(anim, 'temp_jan1-5.gif', account_key)
     plt.close(fig)
-    result = url
+    result = {
+    "static_url": url,
+    "overlay_url": url,  # Same for now
+    "geojson": {"type": "FeatureCollection", "features": []},
+    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
+    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+}
     
 except Exception as e:
     print(f"Animation failed: {e}")

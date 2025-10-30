@@ -125,61 +125,101 @@ def determine_optimal_zoom_level(bounds: dict) -> int:
 
 def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) -> dict:
     """
-    Create tile configuration
+    Create tile configuration using metadata from the actual map that was created
+    
+    Priority order for extracting parameters:
+    1. date_info (already extracted from result metadata)
+    2. map_data metadata (from executed code)
+    3. Query parsing (fallback only)
+    
     Args:
-        map_data: Map result with bounds
-        user_query: Original user query
-        date_info: Pre-extracted date info from extract_analysis_info() (optional)
+        map_data: Map result with bounds and metadata
+        user_query: Original user query (fallback only)
+        date_info: Pre-extracted date info from extract_analysis_info()
+    
+    Returns:
+        dict: Tile configuration with tile_url, zoom, bounds, etc.
+              OR dict with "error" key if parameters cannot be determined
     """
     import re
     import mercantile
     
-    # ✅ Use pre-extracted date info if available
-    if date_info:
-        variable = date_info.get("variable", "Tair")
+    # ✅ PRIORITY 1: Use date_info if provided (already extracted from metadata)
+    if date_info and not date_info.get("error"):
+        variable = date_info.get("variable")
         date_str = date_info.get("date_str")
         
-        # Parse date_str to get year, month, day
+        logging.info(f"✅ Using extracted info: variable={variable}, date={date_str}")
+        
+        # Parse date_str to get components
         if date_str:
             date_parts = date_str.split('-')
             year = int(date_parts[0])
             month = int(date_parts[1])
             day = int(date_parts[2]) if len(date_parts) > 2 else None
-            
-            logging.info(f"🗓️ Using pre-extracted date info: {date_str}, {variable}")
         else:
             return {"error": "No date in extracted info"}
     else:
-        # Fall back to query parsing
-        year_match = re.search(r'(20\d{2})', user_query)
-        if not year_match:
-            return {"error": "No year specified in query"}
-        year = int(year_match.group(1))
-        
-        month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_query.lower())
-        if not month_match:
-            return {"error": "No month specified in query"}
-        month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
-        month = month_names.index(month_match.group(1)) + 1
-        
-        variable = 'Tair'  # Default
-        if any(word in user_query.lower() for word in ['precipitation', 'rain', 'rainfall']):
-            variable = 'Rainf'
-        elif any(word in user_query.lower() for word in ['drought', 'spi']):
-            variable = 'SPI3'
-        
-        # For daily variables, require day specification
-        day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', user_query)
-        if variable != 'SPI3' and (not day_match or not (1 <= int(day_match.group(1)) <= 31)):
-            return {"error": "No valid day specified in query"}
-        day = int(day_match.group(1)) if day_match else None
-    
-    # Build date_str if not already set
-    if not date_info or not date_str:
-        if variable == 'SPI3':
-            date_str = f"{year}-{month:02d}"
+        # ✅ PRIORITY 2: Check map_data metadata
+        metadata = map_data.get("metadata", {})
+        if metadata and metadata.get("variable") and metadata.get("date"):
+            variable = metadata.get("variable")
+            year = metadata.get("year")
+            month = metadata.get("month")
+            day = metadata.get("day")
+            date_str = metadata.get("date")
+            
+            logging.info(f"✅ Using metadata from map_data: variable={variable}, date={date_str}")
         else:
-            date_str = f"{year}-{month:02d}-{day:02d}"
+            # ✅ PRIORITY 3: Parse from query (fallback - should rarely happen)
+            logging.warning("⚠️ No metadata or date_info provided - parsing from query (fallback)")
+            
+            year_match = re.search(r'(20\d{2})', user_query)
+            if not year_match:
+                return {"error": "No year specified in query"}
+            year = int(year_match.group(1))
+            
+            month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_query.lower())
+            if not month_match:
+                return {"error": "No month specified in query"}
+            month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
+            month = month_names.index(month_match.group(1)) + 1
+            
+            # Detect variable type from query
+            user_query_lower = user_query.lower()
+            if any(word in user_query_lower for word in ['precipitation', 'rain', 'rainfall', 'precip']):
+                variable = 'Rainf'
+                logging.info("📝 Detected from query: Rainf (precipitation)")
+            elif any(word in user_query_lower for word in ['drought', 'spi']):
+                variable = 'SPI3'
+                logging.info("📝 Detected from query: SPI3 (drought)")
+            elif any(word in user_query_lower for word in ['temperature', 'temp']):
+                variable = 'Tair'
+                logging.info("📝 Detected from query: Tair (temperature)")
+            else:
+                return {
+                    "error": "Could not determine which weather variable you want. Please specify: temperature, precipitation, or drought/SPI"
+                }
+            
+            # For daily variables, require day specification
+            day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', user_query)
+            if variable != 'SPI3' and (not day_match or not (1 <= int(day_match.group(1)) <= 31)):
+                return {"error": "No valid day specified in query"}
+            day = int(day_match.group(1)) if day_match else None
+            
+            # Build date_str
+            if variable == 'SPI3':
+                date_str = f"{year}-{month:02d}"
+            else:
+                date_str = f"{year}-{month:02d}-{day:02d}"
+    
+    # ✅ Validate that we have all required parameters
+    if not variable or not date_str:
+        return {
+            "error": "Missing required parameters for tile generation",
+            "variable": variable,
+            "date_str": date_str
+        }
     
     # Get bounds from map data
     bounds = map_data.get("bounds", {})
@@ -192,7 +232,8 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
     east = float(bounds.get("east"))
     west = float(bounds.get("west"))
     
-    logging.info(f"🗺️ Creating tiles for: N={north:.2f}, S={south:.2f}, W={west:.2f}, E={east:.2f}")
+    logging.info(f"🗺️ Creating tiles for: variable={variable}, date={date_str}")
+    logging.info(f"🗺️ Bounds: N={north:.2f}, S={south:.2f}, W={west:.2f}, E={east:.2f}")
 
     # Calculate actual data range for this region
     try:
@@ -260,7 +301,7 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
         else:
             region_vmin, region_vmax = 0, 100
     
-    # ✅ USE AREA-BASED ZOOM - DO NOT OVERRIDE IT
+    # ✅ USE AREA-BASED ZOOM
     zoom = determine_optimal_zoom_level(bounds)
     
     # Generate tile list using the calculated zoom
@@ -506,22 +547,50 @@ def extract_agent_text_response(thread_id: str) -> str:
 
 def extract_analysis_info(query: str, result: dict, memory_context: str = "") -> dict:
     """
-    Extract variable, region, and date from query, result, and memory context
+    Extract variable, region, and date from result metadata FIRST, then query, then memory
+    
+    Priority order:
+    1. Result metadata (what was actually used to create the map)
+    2. Query parsing (explicit request)
+    3. Memory context (for "same" queries)
     
     Args:
         query: Current user query
-        result: Result dict from code execution
+        result: Result dict from code execution (should contain metadata)
         memory_context: Recent memory context string
     """
     import re
     
     query_lower = query.lower()
     
-    # ✅ STEP 1: Extract variable (check memory FIRST for "same" queries)
+    # ✅ PRIORITY 1: Extract from result metadata (most reliable - what was actually used)
     variable = None
+    date_str = None
+    region = "unknown"
     
-    if any(word in query_lower for word in ['same', 'similar', 'that', 'this']):
-        # Look for variable in memory context
+    if result and "metadata" in result:
+        metadata = result["metadata"]
+        variable = metadata.get("variable")
+        date_str = metadata.get("date")
+        region = metadata.get("region", "unknown")
+        
+        if variable:
+            logging.info(f"✅ Using metadata from result: variable={variable}, date={date_str}, region={region}")
+            return {
+                "variable": variable,
+                "region": region,
+                "date_str": date_str
+            }
+    
+    # Fallback: Try to extract from color_scale if metadata not present
+    if not variable and result:
+        color_scale = result.get("color_scale", {})
+        if color_scale and "variable" in color_scale:
+            variable = color_scale["variable"]
+            logging.info(f"📊 Extracted variable from color_scale: {variable}")
+    
+    # ✅ PRIORITY 2: Check memory for "same" queries
+    if not variable and any(word in query_lower for word in ['same', 'similar', 'that', 'this']):
         if 'SPI3' in memory_context or 'drought' in memory_context.lower():
             variable = "SPI3"
             logging.info("📝 Extracted variable from memory: SPI3 (drought)")
@@ -532,69 +601,74 @@ def extract_analysis_info(query: str, result: dict, memory_context: str = "") ->
             variable = "Tair"
             logging.info("📝 Extracted variable from memory: Tair (temperature)")
     
-    # If not found in memory, extract from current query
+    # ✅ PRIORITY 3: Parse from current query
     if not variable:
         if any(word in query_lower for word in ['drought', 'spi']):
             variable = "SPI3"
-        elif any(word in query_lower for word in ['precipitation', 'rain', 'rainfall']):
+            logging.info("📝 Extracted variable from query: SPI3")
+        elif any(word in query_lower for word in ['precipitation', 'rain', 'rainfall', 'precip']):
             variable = "Rainf"
+            logging.info("📝 Extracted variable from query: Rainf (precipitation)")
         elif any(word in query_lower for word in ['temperature', 'temp']):
             variable = "Tair"
-        else:
-            variable = "Tair"  # Default
+            logging.info("📝 Extracted variable from query: Tair")
     
-    # ✅ STEP 2: Extract region
-    region = "unknown"
-    regions = {
-        'michigan': 'michigan',
-        'florida': 'florida',
-        'california': 'california',
-        'maryland': 'maryland',
-        'texas': 'texas',
-        'alaska': 'alaska'
-    }
-    for key, value in regions.items():
-        if key in query_lower:
-            region = value
-            break
+    # ✅ VALIDATE: If variable is still None, return error
+    if not variable:
+        logging.error(f"❌ Could not detect variable type from query: {query}")
+        return {
+            "error": "Could not determine which weather variable you want. Please specify: temperature, precipitation, or drought/SPI"
+        }
     
-    # ✅ STEP 3: Extract date (check memory for "same" queries)
-    year = None
-    month = None
-    day = None
+    # ✅ Extract region (if not already from metadata)
+    if region == "unknown":
+        regions = {
+            'michigan': 'michigan',
+            'florida': 'florida',
+            'california': 'california',
+            'maryland': 'maryland',
+            'texas': 'texas',
+            'alaska': 'alaska',
+            'hope': 'alaska',  # Hope is a city in Alaska
+        }
+        for key, value in regions.items():
+            if key in query_lower:
+                region = value
+                break
     
-    if any(word in query_lower for word in ['same', 'similar', 'that', 'this']):
-        # Extract date from memory (format: "2023-06-15" or "2023-06")
-        memory_date_match = re.search(r'on (\d{4}-\d{2}(?:-\d{2})?)', memory_context)
-        if memory_date_match:
-            date_str = memory_date_match.group(1)
-            date_parts = date_str.split('-')
-            year = int(date_parts[0])
-            month = int(date_parts[1])
-            day = int(date_parts[2]) if len(date_parts) > 2 else None
-            logging.info(f"📅 Extracted date from memory: {date_str}")
+    # ✅ Extract date (if not already from metadata)
+    if not date_str:
+        year = None
+        month = None
+        day = None
+        
+        if any(word in query_lower for word in ['same', 'similar', 'that', 'this']):
+            # Extract date from memory (format: "2023-06-15" or "2023-06")
+            memory_date_match = re.search(r'on (\d{4}-\d{2}(?:-\d{2})?)', memory_context)
+            if memory_date_match:
+                date_str = memory_date_match.group(1)
+                logging.info(f"📅 Extracted date from memory: {date_str}")
+        
+        # If not found in memory, extract from query
+        if not date_str:
+            year_match = re.search(r'(20\d{2})', query)
+            year = int(year_match.group(1)) if year_match else 2023
+            
+            month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
+            month_match = re.search(r'(' + '|'.join(month_names) + ')', query_lower)
+            month = month_names.index(month_match.group(1)) + 1 if month_match else 6
+            
+            if variable != "SPI3":
+                day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', query)
+                day = int(day_match.group(1)) if day_match else 15
+            
+            # Build date string
+            if variable == "SPI3":
+                date_str = f"{year}-{month:02d}"
+            else:
+                date_str = f"{year}-{month:02d}-{day:02d}"
     
-    # If not found in memory, extract from query
-    if not year:
-        year_match = re.search(r'(20\d{2})', query)
-        year = int(year_match.group(1)) if year_match else 2023
-    
-    if not month:
-        month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
-        month_match = re.search(r'(' + '|'.join(month_names) + ')', query_lower)
-        month = month_names.index(month_match.group(1)) + 1 if month_match else 6
-    
-    if day is None and variable != "SPI3":
-        day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', query)
-        day = int(day_match.group(1)) if day_match else 15
-    
-    # Build date string
-    if variable == "SPI3":
-        date_str = f"{year}-{month:02d}"
-    else:
-        date_str = f"{year}-{month:02d}-{day:02d}"
-    
-    logging.info(f"📊 Extracted: variable={variable}, region={region}, date={date_str}")
+    logging.info(f"📊 Final extracted info: variable={variable}, region={region}, date={date_str}")
     
     return {
         "variable": variable,
