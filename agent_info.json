@@ -2,7 +2,7 @@
   "project_endpoint": "https://nldas-test-resource.services.ai.azure.com/api/projects/nldas-test",
   "agents": {
     "text": {
-      "id": "asst_YsnxDeuEJkG3QSK06gZWiWzg",
+      "id": "asst_mYevCzPzm2LadYmXnBaIg3lf",
       "name": "nldas3-merged-agent-memory-flash-drought-trends",
       "model": "gpt-4o",
       "capabilities": [
@@ -33,7 +33,7 @@
       ]
     },
     "visualization": {
-      "id": "asst_yaBNWnC7iPSQJpqQVHe8cDyU",
+      "id": "asst_8SXzDjxkD4sxjP8FARJ8eRGH",
       "name": "nldas3-visualization-agent",
       "model": "gpt-4o",
       "capabilities": [

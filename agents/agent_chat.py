@@ -123,18 +123,21 @@ def determine_optimal_zoom_level(bounds: dict) -> int:
     
     return best_zoom
 
+
+
+
+
 def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) -> dict:
     """
-    Create tile configuration using metadata from the actual map that was created
+    Create tile configuration from either raw data or pre-computed data
     
-    Priority order for extracting parameters:
-    1. date_info (already extracted from result metadata)
-    2. map_data metadata (from executed code)
-    3. Query parsing (fallback only)
+    Priority order:
+    1. Pre-computed data (for differences, averages, custom calculations)
+    2. Raw data (for single date/month queries)
     
     Args:
         map_data: Map result with bounds and metadata
-        user_query: Original user query (fallback only)
+        user_query: Original user query (for logging only)
         date_info: Pre-extracted date info from extract_analysis_info()
     
     Returns:
@@ -144,214 +147,256 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
     import re
     import mercantile
     
-    # ✅ PRIORITY 1: Use date_info if provided (already extracted from metadata)
-    if date_info and not date_info.get("error"):
-        variable = date_info.get("variable")
-        date_str = date_info.get("date_str")
-        
-        logging.info(f"✅ Using extracted info: variable={variable}, date={date_str}")
-        
-        # Parse date_str to get components
-        if date_str:
-            date_parts = date_str.split('-')
-            year = int(date_parts[0])
-            month = int(date_parts[1])
-            day = int(date_parts[2]) if len(date_parts) > 2 else None
-        else:
-            return {"error": "No date in extracted info"}
-    else:
-        # ✅ PRIORITY 2: Check map_data metadata
-        metadata = map_data.get("metadata", {})
-        if metadata and metadata.get("variable") and metadata.get("date"):
-            variable = metadata.get("variable")
-            year = metadata.get("year")
-            month = metadata.get("month")
-            day = metadata.get("day")
-            date_str = metadata.get("date")
-            
-            logging.info(f"✅ Using metadata from map_data: variable={variable}, date={date_str}")
-        else:
-            # ✅ PRIORITY 3: Parse from query (fallback - should rarely happen)
-            logging.warning("⚠️ No metadata or date_info provided - parsing from query (fallback)")
-            
-            year_match = re.search(r'(20\d{2})', user_query)
-            if not year_match:
-                return {"error": "No year specified in query"}
-            year = int(year_match.group(1))
-            
-            month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_query.lower())
-            if not month_match:
-                return {"error": "No month specified in query"}
-            month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
-            month = month_names.index(month_match.group(1)) + 1
-            
-            # Detect variable type from query
-            user_query_lower = user_query.lower()
-            if any(word in user_query_lower for word in ['precipitation', 'rain', 'rainfall', 'precip']):
-                variable = 'Rainf'
-                logging.info("📝 Detected from query: Rainf (precipitation)")
-            elif any(word in user_query_lower for word in ['drought', 'spi']):
-                variable = 'SPI3'
-                logging.info("📝 Detected from query: SPI3 (drought)")
-            elif any(word in user_query_lower for word in ['temperature', 'temp']):
-                variable = 'Tair'
-                logging.info("📝 Detected from query: Tair (temperature)")
-            else:
-                return {
-                    "error": "Could not determine which weather variable you want. Please specify: temperature, precipitation, or drought/SPI"
-                }
-            
-            # For daily variables, require day specification
-            day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', user_query)
-            if variable != 'SPI3' and (not day_match or not (1 <= int(day_match.group(1)) <= 31)):
-                return {"error": "No valid day specified in query"}
-            day = int(day_match.group(1)) if day_match else None
-            
-            # Build date_str
-            if variable == 'SPI3':
-                date_str = f"{year}-{month:02d}"
-            else:
-                date_str = f"{year}-{month:02d}-{day:02d}"
+    logging.info(f"🔍 create_tile_config called")
+    logging.info(f"  📝 Query: {user_query}")
     
-    # ✅ Validate that we have all required parameters
+    # ✅ CRITICAL: ONLY use metadata - no fallbacks, no parsing
+    if not date_info or date_info.get("error"):
+        logging.error(f"❌ No date_info provided: {date_info}")
+        return {"error": "Missing metadata from map generation"}
+    
+    variable = date_info.get("variable")
+    date_str = date_info.get("date_str")
+    region = date_info.get("region", "unknown")
+    
     if not variable or not date_str:
-        return {
-            "error": "Missing required parameters for tile generation",
-            "variable": variable,
-            "date_str": date_str
-        }
+        logging.error(f"❌ Incomplete metadata: variable={variable}, date={date_str}")
+        return {"error": f"Incomplete metadata: variable={variable}, date={date_str}"}
     
-    # Get bounds from map data
+    logging.info(f"✅ Using metadata: variable={variable}, date={date_str}, region={region}")
+    
+    # Get bounds from map data (these are the ACTUAL bounds used)
     bounds = map_data.get("bounds", {})
-    if not bounds:
-        logging.error("❌ No bounds provided in map_data")
-        return {"error": "No geographic bounds available"}
+    if not bounds or not all(k in bounds for k in ["north", "south", "east", "west"]):
+        logging.error(f"❌ Invalid bounds: {bounds}")
+        return {"error": "Invalid geographic bounds"}
     
-    north = float(bounds.get("north"))
-    south = float(bounds.get("south"))
-    east = float(bounds.get("east"))
-    west = float(bounds.get("west"))
+    north = float(bounds["north"])
+    south = float(bounds["south"])
+    east = float(bounds["east"])
+    west = float(bounds["west"])
     
-    logging.info(f"🗺️ Creating tiles for: variable={variable}, date={date_str}")
-    logging.info(f"🗺️ Bounds: N={north:.2f}, S={south:.2f}, W={west:.2f}, E={east:.2f}")
-
-    # Calculate actual data range for this region
-    try:
-        from .weather_tool import (
-            load_specific_date_kerchunk,
-            load_specific_month_spi_kerchunk,
-            get_account_key,
-            ACCOUNT_NAME
-        )
+    logging.info(f"🗺️  Using EXACT bounds from static map:")
+    logging.info(f"   N={north:.4f}, S={south:.4f}, E={east:.4f}, W={west:.4f}")
+    
+    # ✅ NEW: Check if we have pre-computed data
+    metadata = map_data.get("metadata", {})
+    computation_type = metadata.get("computation_type", "raw")
+    computed_data_url = metadata.get("computed_data_url")
+    computed_data_hash = metadata.get("computed_data_hash")
+    
+    logging.info(f"📊 Computation type: {computation_type}")
+    
+    if computed_data_url and computed_data_hash and computation_type != "raw":
+        # ✅ USE PRE-COMPUTED DATA for tiles
+        logging.info(f"✅ Using pre-computed data: {computed_data_url}")
+        logging.info(f"   Hash: {computed_data_hash}")
         
-        account_key = get_account_key()
+        # Get color scale from metadata (what was actually used in static map)
+        color_scale = metadata.get("color_scale", {})
+        vmin = color_scale.get("vmin")
+        vmax = color_scale.get("vmax")
+        cmap = color_scale.get("cmap", "viridis")
         
-        if variable == 'SPI3':
-            ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
-            data = ds[variable].sel(
-                latitude=builtins.slice(south, north),
-                longitude=builtins.slice(west, east)
-            )
-            region_vmin, region_vmax = -2.5, 2.5
-        else:
-            ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
-            data = ds[variable].sel(
-                lat=builtins.slice(south, north),
-                lon=builtins.slice(west, east)
-            )
-            
-            # Process the data
-            if variable == 'Tair':
-                data = data.mean(dim='time') - 273.15
-            elif variable == 'Rainf':
-                data = data.sum(dim='time')
-            else:
-                data = data.mean(dim='time')
-            
-            if hasattr(data, 'squeeze'):
-                data = data.squeeze()
-            
-            valid_data = data.values[np.isfinite(data.values)]
-            if len(valid_data) > 0:
-                region_vmin, region_vmax = np.percentile(valid_data, [2, 98])
-                
-                if abs(region_vmax - region_vmin) < 0.1:
-                    center = (region_vmin + region_vmax) / 2
-                    region_vmin = center - 1.0
-                    region_vmax = center + 1.0
-            else:
-                if variable == 'Tair':
-                    region_vmin, region_vmax = -10, 30
-                elif variable == 'Rainf':
-                    region_vmin, region_vmax = 0, 50
-                else:
-                    region_vmin, region_vmax = 0, 100
+        if vmin is None or vmax is None:
+            logging.error(f"❌ Missing color scale in metadata")
+            return {"error": "Missing color scale for computed data"}
         
-        ds.close()
-        logging.info(f"🎨 Region-specific scale: {region_vmin:.2f} to {region_vmax:.2f}")
+        logging.info(f"🎨 Using color scale from metadata: {vmin:.2f} to {vmax:.2f}, cmap={cmap}")
         
-    except Exception as scale_error:
-        logging.error(f"❌ Failed to calculate region scale: {scale_error}")
-        if variable == 'SPI3':
-            region_vmin, region_vmax = -2.5, 2.5
-        elif variable == 'Tair':
-            region_vmin, region_vmax = -10, 30
-        elif variable == 'Rainf':
-            region_vmin, region_vmax = 0, 50
-        else:
-            region_vmin, region_vmax = 0, 100
-    
-    # ✅ USE AREA-BASED ZOOM
-    zoom = determine_optimal_zoom_level(bounds)
-    
-    # Generate tile list using the calculated zoom
-    nw_tile = mercantile.tile(west, north, zoom)
-    se_tile = mercantile.tile(east, south, zoom)
-    
-    tile_count_x = se_tile.x - nw_tile.x + 1
-    tile_count_y = se_tile.y - nw_tile.y + 1
-    total_tiles = tile_count_x * tile_count_y
-    
-    logging.info(f"🎯 Final tile grid: {tile_count_x} × {tile_count_y} = {total_tiles} tiles at zoom {zoom}")
-    
-    # Generate tile list
-    tile_list = []
-    for x in range(nw_tile.x, se_tile.x + 1):
-        for y in range(nw_tile.y, se_tile.y + 1):
-            tile_bounds = mercantile.bounds(mercantile.Tile(x, y, zoom))
-            
-            tile_list.append({
-                "z": zoom,
-                "x": x,
-                "y": y,
-                "url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{zoom}/{x}/{y}.png?vmin={region_vmin}&vmax={region_vmax}",
-                "bounds": {
-                    "north": tile_bounds.north,
-                    "south": tile_bounds.south,
-                    "east": tile_bounds.east,
-                    "west": tile_bounds.west
-                }
-            })
-    
-    logging.info(f"✅ Generated {len(tile_list)} tiles: X={nw_tile.x}-{se_tile.x}, Y={nw_tile.y}-{se_tile.y} (256x256 each)")
-    
-    return {
-        "tile_url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png?vmin={region_vmin}&vmax={region_vmax}",
-        "variable": variable,
-        "date": date_str,
-        "zoom": zoom,
-        "min_zoom": max(3, zoom - 1),
-        "max_zoom": min(10, zoom + 2),
-        "tile_size": 256,
-        "tile_list": tile_list,
-        "region_bounds": {"north": north, "south": south, "east": east, "west": west},
-        "tile_count": len(tile_list),
-        "color_scale": {
-            "vmin": float(region_vmin),
-            "vmax": float(region_vmax),
-            "variable": variable
+        # Calculate zoom
+        zoom = determine_optimal_zoom_level(bounds)
+        
+        # Generate tile grid
+        nw_tile = mercantile.tile(west, north, zoom)
+        se_tile = mercantile.tile(east, south, zoom)
+        
+        tile_count_x = se_tile.x - nw_tile.x + 1
+        tile_count_y = se_tile.y - nw_tile.y + 1
+        total_tiles = tile_count_x * tile_count_y
+        
+        logging.info(f"🎯 Tile grid: {tile_count_x} × {tile_count_y} = {total_tiles} tiles at zoom {zoom}")
+        
+        # Generate tile list with computed data endpoint
+        tile_list = []
+        for x in range(nw_tile.x, se_tile.x + 1):
+            for y in range(nw_tile.y, se_tile.y + 1):
+                tile_bounds = mercantile.bounds(mercantile.Tile(x, y, zoom))
+                tile_list.append({
+                    "z": zoom,
+                    "x": x,
+                    "y": y,
+                    "url": f"http://localhost:8000/api/tiles/computed/{computed_data_hash}/{zoom}/{x}/{y}.png?vmin={vmin}&vmax={vmax}&cmap={cmap}",
+                    "bounds": {
+                        "north": tile_bounds.north,
+                        "south": tile_bounds.south,
+                        "east": tile_bounds.east,
+                        "west": tile_bounds.west
+                    }
+                })
+        
+        logging.info(f"✅ Generated {len(tile_list)} tiles from pre-computed data")
+        
+        return {
+            "tile_url": f"http://localhost:8000/api/tiles/computed/{computed_data_hash}/{{z}}/{{x}}/{{y}}.png?vmin={vmin}&vmax={vmax}&cmap={cmap}",
+            "variable": variable,
+            "date": date_str,
+            "computation_type": computation_type,
+            "computation_description": metadata.get("computation_description"),
+            "zoom": zoom,
+            "min_zoom": max(3, zoom - 1),
+            "max_zoom": min(10, zoom + 2),
+            "tile_size": 256,
+            "tile_list": tile_list,
+            "region_bounds": {"north": north, "south": south, "east": east, "west": west},
+            "tile_count": len(tile_list),
+            "color_scale": {
+                "vmin": float(vmin),
+                "vmax": float(vmax),
+                "cmap": cmap,
+                "variable": variable
+            },
+            "uses_precomputed_data": True,
+            "computed_data_hash": computed_data_hash
         }
-    }
+    
+    else:
+        # ✅ RAW DATA - existing logic for single date loading
+        logging.info(f"✅ Using raw data tiles (single date/month)")
+        
+        # Parse date to get year, month, day
+        date_parts = date_str.split('-')
+        year = int(date_parts[0])
+        month = int(date_parts[1])
+        day = int(date_parts[2]) if len(date_parts) > 2 else None
+        
+        logging.info(f"📅 Loading data for: {year}-{month:02d}" + (f"-{day:02d}" if day else ""))
+        
+        # Calculate actual data range for this region
+        try:
+            from .weather_tool import (
+                load_specific_date_kerchunk,
+                load_specific_month_spi_kerchunk,
+                get_account_key,
+                ACCOUNT_NAME
+            )
+            
+            account_key = get_account_key()
+            
+            if variable == 'SPI3':
+                ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
+                data = ds[variable].sel(
+                    latitude=builtins.slice(south, north),
+                    longitude=builtins.slice(west, east)
+                )
+                if hasattr(data, 'squeeze'):
+                    data = data.squeeze()
+                region_vmin, region_vmax = -2.5, 2.5
+            else:
+                ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
+                data = ds[variable].sel(
+                    lat=builtins.slice(south, north),
+                    lon=builtins.slice(west, east)
+                )
+                
+                # Apply EXACT same processing as static map
+                if variable == 'Tair':
+                    data = data.mean(dim='time') - 273.15
+                elif variable == 'Rainf':
+                    data = data.sum(dim='time')
+                else:
+                    data = data.mean(dim='time')
+                
+                if hasattr(data, 'squeeze'):
+                    data = data.squeeze()
+                
+                # Calculate percentile-based scale (same as static map)
+                valid_data = data.values[np.isfinite(data.values)]
+                if len(valid_data) > 0:
+                    region_vmin, region_vmax = np.percentile(valid_data, [2, 98])
+                    
+                    # Prevent collapsed range
+                    if abs(region_vmax - region_vmin) < 0.1:
+                        center = (region_vmin + region_vmax) / 2
+                        region_vmin = center - 1.0
+                        region_vmax = center + 1.0
+                else:
+                    # Fallback defaults
+                    if variable == 'Tair':
+                        region_vmin, region_vmax = -10, 30
+                    elif variable == 'Rainf':
+                        region_vmin, region_vmax = 0, 50
+                    else:
+                        region_vmin, region_vmax = 0, 100
+            
+            ds.close()
+            logging.info(f"🎨 Calculated scale from actual data: {region_vmin:.2f} to {region_vmax:.2f}")
+            
+        except Exception as scale_error:
+            logging.error(f"❌ Failed to calculate region scale: {scale_error}")
+            # Use defaults based on variable
+            if variable == 'SPI3':
+                region_vmin, region_vmax = -2.5, 2.5
+            elif variable == 'Tair':
+                region_vmin, region_vmax = -10, 30
+            elif variable == 'Rainf':
+                region_vmin, region_vmax = 0, 50
+            else:
+                region_vmin, region_vmax = 0, 100
+        
+        # Calculate zoom
+        zoom = determine_optimal_zoom_level(bounds)
+        
+        # Generate tile grid
+        nw_tile = mercantile.tile(west, north, zoom)
+        se_tile = mercantile.tile(east, south, zoom)
+        
+        tile_count_x = se_tile.x - nw_tile.x + 1
+        tile_count_y = se_tile.y - nw_tile.y + 1
+        total_tiles = tile_count_x * tile_count_y
+        
+        logging.info(f"🎯 Tile grid: {tile_count_x} × {tile_count_y} = {total_tiles} tiles at zoom {zoom}")
+        
+        # Generate tile list
+        tile_list = []
+        for x in range(nw_tile.x, se_tile.x + 1):
+            for y in range(nw_tile.y, se_tile.y + 1):
+                tile_bounds = mercantile.bounds(mercantile.Tile(x, y, zoom))
+                
+                tile_list.append({
+                    "z": zoom,
+                    "x": x,
+                    "y": y,
+                    "url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{zoom}/{x}/{y}.png?vmin={region_vmin}&vmax={region_vmax}",
+                    "bounds": {
+                        "north": tile_bounds.north,
+                        "south": tile_bounds.south,
+                        "east": tile_bounds.east,
+                        "west": tile_bounds.west
+                    }
+                })
+        
+        logging.info(f"✅ Generated {len(tile_list)} tiles")
+        
+        return {
+            "tile_url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png?vmin={region_vmin}&vmax={region_vmax}",
+            "variable": variable,
+            "date": date_str,
+            "zoom": zoom,
+            "min_zoom": max(3, zoom - 1),
+            "max_zoom": min(10, zoom + 2),
+            "tile_size": 256,
+            "tile_list": tile_list,
+            "region_bounds": {"north": north, "south": south, "east": east, "west": west},
+            "tile_count": len(tile_list),
+            "color_scale": {
+                "vmin": float(region_vmin),
+                "vmax": float(region_vmax),
+                "variable": variable
+            },
+            "uses_precomputed_data": False
+        }
+
 
 def wrap_with_geo_overlay(static_url: str, original_query: str) -> dict:
     """
@@ -716,7 +761,6 @@ def handle_chat_request(data):
                     if mem_user and mem_user != user_id:
                         logging.error(f"🚨 MEMORY LEAK: Retrieved memory from {mem_user[:8]}... for user {user_id[:8]}...")
         
-
         # Build enhanced query with memory context
         memory_context_str = ""
         if recent_memories or relevant_memories:
@@ -984,28 +1028,38 @@ def handle_chat_request(data):
                                     if isinstance(result_value, dict) and ("static_url" in result_value or "overlay_url" in result_value):
                                         logging.info("🗺️ Map result detected")
                                         
-                                        # Store analysis in memory before processing
+                                        # Extract analysis info
                                         extracted_info = extract_analysis_info(user_query, result_value, memory_context_str)
+
+                                        # ✅ ONLY store if extraction succeeded
+                                        if "error" not in extracted_info:
+                                            memory_manager.add_structured_analysis(
+                                                user_id=user_id,
+                                                variable=extracted_info["variable"],
+                                                region=extracted_info["region"],
+                                                date_str=extracted_info["date_str"],
+                                                bounds=result_value.get("bounds", {}),
+                                                result_url=result_value.get("static_url"),
+                                                color_range=result_value.get("color_scale")
+                                            )
+                                            logging.info(f"💾 Stored structured analysis memory for {user_id}")
+                                        else:
+                                            logging.warning(f"⚠️ Skipping memory storage due to extraction error: {extracted_info.get('error')}")
                                         
-                                        memory_manager.add_structured_analysis(
-                                            user_id=user_id,
-                                            variable=extracted_info["variable"],
-                                            region=extracted_info["region"],
-                                            date_str=extracted_info["date_str"],
-                                            bounds=result_value.get("bounds", {}),
-                                            result_url=result_value.get("static_url"),
-                                            color_range=result_value.get("color_scale")
-                                        )
-                                        
-                                        logging.info(f"💾 Stored structured analysis memory for {user_id}")
-                                        
+                                        # ✅ CRITICAL: Continue processing regardless of memory storage
                                         enriched = normalize_map_result_dict(result_value, user_query)
                                         enriched["temperature_data"] = build_temperature_data(enriched.get("geojson", {}))
                                         
                                         use_tiles = should_use_tiles(user_query, enriched)
-                        
+
                                         if use_tiles:
-                                            tile_config = create_tile_config(enriched, user_query, extracted_info)
+                                            # ✅ Only create tiles if we have valid metadata
+                                            if "error" not in extracted_info:
+                                                tile_config = create_tile_config(enriched, user_query, extracted_info)
+                                            else:
+                                                # Fallback: Try to create tile config without extracted_info
+                                                logging.warning(f"⚠️ Creating tile config without extracted_info: {extracted_info.get('error')}")
+                                                tile_config = create_tile_config(enriched, user_query, date_info=None)
                                             
                                             # Check if tile config failed
                                             if "error" in tile_config:
@@ -1049,6 +1103,7 @@ def handle_chat_request(data):
                                                 
                                                 return make_json_serializable(response)
                                             
+                                            # Success - tiles generated
                                             tool_outputs.append({
                                                 "tool_call_id": tool_call.id,
                                                 "output": json.dumps({"status": "success", "completed": True})
@@ -1086,6 +1141,7 @@ def handle_chat_request(data):
                                             return make_json_serializable(response)
                                         
                                         else:
+                                            # No tiles - static only
                                             tool_outputs.append({
                                                 "tool_call_id": tool_call.id,
                                                 "output": json.dumps({"status": "success", "completed": True})
@@ -1121,8 +1177,7 @@ def handle_chat_request(data):
                                             
                                             return make_json_serializable(response)
                                     else:
-                                        # Text result
-                                        # Store non-map results in memory
+                                        # Text result (not a map)
                                         memory_manager.add(
                                             f"Query: {user_query}\nResult: {str(result_value)[:200]}",
                                             user_id,

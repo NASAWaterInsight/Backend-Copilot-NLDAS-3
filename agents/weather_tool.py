@@ -585,6 +585,61 @@ def find_available_spi_files(account_name: str, account_key: str):
     available_dates.sort(key=lambda x: x["date"])
     return available_dates
 
+def save_computed_data_to_blob(data_array, lon_array, lat_array, metadata, account_key):
+    """
+    Save computed data array to blob storage for tile generation
+    
+    Args:
+        data_array: numpy array of computed values
+        lon_array: longitude coordinates
+        lat_array: latitude coordinates
+        metadata: dict with variable, date, computation details
+        account_key: Azure storage account key
+    
+    Returns:
+        str: blob URL and hash for the saved data
+    """
+    import pickle
+    import hashlib
+    from azure.storage.blob import BlobServiceClient
+    import numpy as np
+    
+    # Create a unique filename based on computation
+    computation_str = f"{metadata.get('variable')}_{metadata.get('date')}_{metadata.get('computation_type', 'raw')}"
+    data_hash = hashlib.md5(computation_str.encode()).hexdigest()[:8]
+    filename = f"computed_data_{data_hash}.pkl"
+    
+    # Package data - ensure numpy arrays
+    data_package = {
+        'data': np.asarray(data_array),
+        'lon': np.asarray(lon_array),
+        'lat': np.asarray(lat_array),
+        'metadata': metadata
+    }
+    
+    # Serialize to pickle
+    pickled_data = pickle.dumps(data_package)
+    
+    # Upload to blob
+    blob_service_client = BlobServiceClient(
+        account_url=f"https://{ACCOUNT_NAME}.blob.core.windows.net",
+        credential=account_key
+    )
+    
+    container_name = "visualizations"
+    blob_client = blob_service_client.get_blob_client(
+        container=container_name,
+        blob=filename
+    )
+    
+    blob_client.upload_blob(pickled_data, overwrite=True)
+    blob_url = f"https://{ACCOUNT_NAME}.blob.core.windows.net/{container_name}/{filename}"
+    
+    logging.info(f"💾 Saved computed data to: {blob_url}")
+    logging.info(f"   Hash: {data_hash}")
+    
+    return blob_url, data_hash
+
 def load_specific_month_spi_kerchunk(account_name: str, account_key: str, year: int, month: int):
     """
     Load SPI kerchunk data for a specific month (format: YYYYMM)

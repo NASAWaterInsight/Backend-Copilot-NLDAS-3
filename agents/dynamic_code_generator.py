@@ -13,11 +13,12 @@ def analyze_extreme_regions(user_request: str):
         import numpy as np
         import builtins  # CRITICAL: Add this import
         from .weather_tool import (
-            load_specific_date_kerchunk, 
-            load_specific_month_spi_kerchunk,
-            get_account_key,
-            ACCOUNT_NAME
-        )
+    load_specific_date_kerchunk, 
+    load_specific_month_spi_kerchunk,
+    get_account_key,
+    save_computed_data_to_blob,  # ADD THIS LINE
+    ACCOUNT_NAME
+)
         
         logging.info(f"🔍 Direct analysis function called for: {user_request}")
         
@@ -288,6 +289,7 @@ def execute_custom_code(args: dict):
             from .weather_tool import (
                 load_specific_date_kerchunk, 
                 save_plot_to_blob_simple,
+                save_computed_data_to_blob,
                 get_account_key,
                 find_available_kerchunk_files,
                 ACCOUNT_NAME,
@@ -1086,6 +1088,7 @@ def execute_custom_code(args: dict):
                 # Basic weather functions
                 'load_specific_date_kerchunk': load_specific_date_kerchunk,
                 'save_plot_to_blob_simple': save_plot_to_blob_simple,
+                'save_computed_data_to_blob': save_computed_data_to_blob,
                 'get_account_key': get_account_key,
                 'find_available_kerchunk_files': find_available_kerchunk_files,
                 'ACCOUNT_NAME': ACCOUNT_NAME,

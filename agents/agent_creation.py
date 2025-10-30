@@ -119,9 +119,203 @@ result = {
     "overlay_url": overlay_url,
     "geojson": geojson,
     "bounds": bounds,
-    "map_config": map_config
+    "map_config": map_config,
+    "metadata": {
+        "variable": "Rainf",  # The weather variable used
+        "date": "2023-08-16",  # Date string (YYYY-MM-DD or YYYY-MM for SPI)
+        "year": 2023,
+        "month": 8,
+        "day": 16,  # or None for SPI
+        "region": "florida",  # Region name in lowercase
+        "computation_type": "raw",  # "raw" for single date, "difference" for comparisons
+        "color_scale": {"vmin": 0.0, "vmax": 50.0, "cmap": "Blues"}
+    }
 }
-NEVER return just a URL string like result = url. This breaks the tile system. The frontend needs the structured format to create interactive tiles.
+
+This metadata enables memory storage and tile generation. ALWAYS include it, even for simple queries.
+
+
+🚨 CRITICAL: COMPUTED DATA STORAGE - For ANY computation beyond simple raw data loading:
+
+COMPUTATION TYPES:
+- "raw" = Single date/month, no computation needed
+- "difference" = Difference between two time periods (Jan 20 minus Jan 1-5 average)
+- "average" = Average over multiple days/months
+- "anomaly" = Deviation from climatology
+- "comparison" = Side-by-side comparison
+
+WHEN TO SAVE COMPUTED DATA:
+If your code does ANY of these, you MUST call save_computed_data_to_blob:
+- Subtracting two time periods (differences)
+- Averaging multiple days
+- Any custom calculation beyond single-date loading
+
+REQUIRED PATTERN FOR COMPUTED DATA:
+```python
+# After computing your final data array:
+computed_data_url, computed_data_hash = save_computed_data_to_blob(
+    data_array=computed_data.values,  # The computed numpy array
+    lon_array=computed_data.lon.values,  # or .longitude.values for SPI
+    lat_array=computed_data.lat.values,  # or .latitude.values for SPI
+    metadata={
+        'variable': 'Rainf',  # Original variable
+        'date': '2023-01-20',  # Primary date being displayed
+        'computation_type': 'difference',  # CRITICAL: Type of computation
+        'computation_description': 'Jan 20 minus average of Jan 1-5',  # Human readable
+        'region': region_name,
+        'vmin': float(vmin),  # Color scale min (EXACT same as static map)
+        'vmax': float(vmax),  # Color scale max (EXACT same as static map)
+        'cmap': 'RdBu'  # Colormap used (EXACT same as static map)
+    },
+    account_key=account_key
+)
+
+# Then include in result:
+result = {
+    "static_url": static_url,
+    "overlay_url": overlay_url,
+    "geojson": geojson,
+    "bounds": bounds,
+    "map_config": map_config,
+    "metadata": {
+        "variable": "Rainf",
+        "date": "2023-01-20",
+        "year": 2023,
+        "month": 1,
+        "day": 20,
+        "region": region_name,
+        "computation_type": "difference",  # CRITICAL
+        "computation_description": "Jan 20 minus average of Jan 1-5",
+        "computed_data_url": computed_data_url,  # CRITICAL
+        "computed_data_hash": computed_data_hash,  # CRITICAL
+        "color_scale": {
+            "vmin": float(vmin),
+            "vmax": float(vmax),
+            "cmap": "RdBu"
+        }
+    }
+}
+```
+
+EXAMPLE: Precipitation Difference Query
+"Show me how precipitation in Colorado on Jan 20, 2023 differs from Jan 1-5, 2023"
+```python
+import builtins
+import numpy as np
+
+# Detect region
+if 'colorado' in user_request.lower():
+    region_name = 'colorado'
+    lat_min, lat_max = 37.0, 41.0
+    lon_min, lon_max = -109.0, -102.0
+
+# Load Jan 20 data
+ds_jan20, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 20)
+data_jan20 = ds_jan20['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).sum(dim='time')
+
+# Load and average Jan 1-5
+precip_sum = None
+for day in range(1, 6):
+    ds_temp, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, day)
+    day_data = ds_temp['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).sum(dim='time')
+    if precip_sum is None:
+        precip_sum = day_data
+    else:
+        precip_sum = precip_sum + day_data
+    ds_temp.close()
+
+data_jan1_5_avg = precip_sum / 5
+
+# COMPUTE DIFFERENCE
+computed_data = data_jan20 - data_jan1_5_avg
+
+# Calculate color scale
+vmin = float(np.nanpercentile(computed_data.values, 2))
+vmax = float(np.nanpercentile(computed_data.values, 98))
+abs_max = max(abs(vmin), abs(vmax))
+vmin, vmax = -abs_max, abs_max
+
+# Create static map
+fig, ax = create_cartopy_map(computed_data.lon, computed_data.lat, computed_data.values,
+    f'Precipitation Difference: Jan 20 vs Jan 1-5 Average\\n{region_name.title()}',
+    'Difference (mm)', 'RdBu')
+static_url = save_plot_to_blob_simple(fig, f'{region_name}_precip_diff.png', account_key)
+
+# Create transparent overlay
+fig2 = plt.figure(figsize=(10, 8), frameon=False, dpi=200)
+fig2.patch.set_alpha(0)
+ax2 = fig2.add_axes([0, 0, 1, 1])
+ax2.set_axis_off()
+ax2.set_facecolor('none')
+ax2.set_xlim(lon_min, lon_max)
+ax2.set_ylim(lat_min, lat_max)
+lon_grid, lat_grid = np.meshgrid(computed_data.lon, computed_data.lat)
+masked = np.ma.masked_invalid(computed_data.values)
+ax2.pcolormesh(lon_grid, lat_grid, masked, cmap='RdBu', vmin=vmin, vmax=vmax, shading='auto', alpha=0.9)
+overlay_url = save_plot_to_blob_simple(fig2, f'{region_name}_precip_diff_overlay.png', account_key)
+
+# 🚨 CRITICAL: Save computed data for tiles
+computed_data_url, computed_data_hash = save_computed_data_to_blob(
+    data_array=computed_data.values,
+    lon_array=computed_data.lon.values,
+    lat_array=computed_data.lat.values,
+    metadata={
+        'variable': 'Rainf',
+        'date': '2023-01-20',
+        'computation_type': 'difference',
+        'computation_description': 'Jan 20 minus average of Jan 1-5',
+        'region': region_name,
+        'vmin': vmin,
+        'vmax': vmax,
+        'cmap': 'RdBu'
+    },
+    account_key=account_key
+)
+
+# Build GeoJSON
+geo_features = []
+for i in range(0, len(computed_data.lat.values), max(1, len(computed_data.lat.values)//25)):
+    for j in range(0, len(computed_data.lon.values), max(1, len(computed_data.lon.values)//25)):
+        v = float(computed_data.values[i, j])
+        if np.isfinite(v):
+            geo_features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [float(computed_data.lon.values[j]), float(computed_data.lat.values[i])]},
+                "properties": {"value": v, "variable": "precipitation_difference", "unit": "mm"}
+            })
+geojson = {"type": "FeatureCollection", "features": geo_features}
+
+ds_jan20.close()
+plt.close(fig)
+plt.close(fig2)
+
+# COMPLETE RESULT with computed data
+result = {
+    "static_url": static_url,
+    "overlay_url": overlay_url,
+    "geojson": geojson,
+    "bounds": {"north": float(lat_max), "south": float(lat_min), "east": float(lon_max), "west": float(lon_min)},
+    "map_config": {"center": [float((lon_min+lon_max)/2), float((lat_min+lat_max)/2)], "zoom": 6, "style": "satellite", "overlay_mode": True},
+    "metadata": {
+        "variable": "Rainf",
+        "date": "2023-01-20",
+        "year": 2023,
+        "month": 1,
+        "day": 20,
+        "region": region_name,
+        "computation_type": "difference",
+        "computation_description": "Jan 20 minus average of Jan 1-5, 2023",
+        "computed_data_url": computed_data_url,
+        "computed_data_hash": computed_data_hash,
+        "color_scale": {"vmin": vmin, "vmax": vmax, "cmap": "RdBu"}
+    }
+}
+```
+
+FOR RAW DATA (single date, no computation) - DO NOT call save_computed_data_to_blob:
+Just include basic metadata with computation_type: "raw" and NO computed_data_url.
+
+
 ⚡ SPEED OPTIMIZATION: For common US states and regions, use standard geographic boundaries WITHOUT extensive calculation. Be decisive about coordinates - don't spend time researching exact boundaries.
 
 Example patterns:
@@ -137,6 +331,7 @@ CRITICAL: ONLY use these exact function names (no others exist):
 - create_multi_day_animation(year, month, day, num_days, 'Tair', lat_min, lat_max, lon_min, lon_max, 'Region')
 - save_animation_to_blob(anim, filename, account_key)
 - save_plot_to_blob_simple(fig, filename, account_key)
+- save_computed_data_to_blob(data_array, lon_array, lat_array, metadata, account_key)
 - create_cartopy_map(lon, lat, data, title, colorbar_label, cmap)
 
 CRITICAL VARIABLE MAPPING - ONLY use these exact variable names:
@@ -764,7 +959,17 @@ result = {
     "overlay_url": overlay_url,
     "geojson": geojson,
     "bounds": bounds,
-    "map_config": map_config
+    "map_config": map_config,
+    "metadata": {
+        "variable": "Rainf",
+        "date": "2023-01-21",
+        "year": 2023,
+        "month": 1,
+        "day": 21,
+        "region": "florida",
+        "computation_type": "raw",
+        "color_scale": {"vmin": float(vmin), "vmax": float(vmax), "cmap": "Blues"}
+    }
 }
 ```
 
@@ -827,7 +1032,17 @@ result = {
     "overlay_url": overlay_url,
     "geojson": geojson,
     "bounds": bounds,
-    "map_config": map_config
+    "map_config": map_config,
+    "metadata": {
+        "variable": "Tair",
+        "date": "2023-01-15",
+        "year": 2023,
+        "month": 1,
+        "day": 15,
+        "region": "florida",
+        "computation_type": "raw",
+        "color_scale": {"vmin": float(vmin), "vmax": float(vmax), "cmap": "RdYlBu_r"}
+    }
 }
 ```
 
@@ -920,7 +1135,17 @@ result = {
     "overlay_url": overlay_url,
     "geojson": geojson,
     "bounds": bounds,
-    "map_config": map_config
+    "map_config": map_config,
+    "metadata": {
+        "variable": "SPI3",
+        "date": "2020-05",
+        "year": 2020,
+        "month": 5,
+        "day": None,  # SPI is monthly
+        "region": "california",
+        "computation_type": "raw",
+        "color_scale": {"vmin": float(vmin), "vmax": float(vmax), "cmap": "spi_overlay"}
+    }
 }
 ```
 
