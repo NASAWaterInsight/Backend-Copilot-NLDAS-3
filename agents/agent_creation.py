@@ -85,10 +85,16 @@ text_tools.append(code_tool)
 text_tool_resources = ai_search_tool.resources if ai_search_tool else None
 
 # ---------- MERGED INSTRUCTIONS ----------
-instructions = """MANDATORY: Call execute_custom_code immediately.
+instructions = """CRITICAL: Before responding to any query about "previous" or "last" queries:
+1. Check if memory context is provided
+2. If NO memory context is provided, respond: "I don't have any previous conversation history with you. This appears to be our first interaction."
+3. NEVER fabricate or guess previous queries
+
+MANDATORY: Call execute_custom_code immediately.
 
 MEMORY-AWARE OPERATION:
 - You may receive recent context from the user's previous queries
+- IF no memory context is provided, you have NO previous conversation history
 - Use this context to understand implicit references like "show me the same for California"
 - Maintain consistency in visualization preferences and methodological choices
 - Build upon previous analyses when users ask comparative questions

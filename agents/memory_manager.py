@@ -231,8 +231,12 @@ class MemoryManager:
         if not self.enabled:
             return []
 
+        # ✅ VALIDATE USER_ID
+        if not user_id or user_id.strip() == "":
+            logging.warning("⚠️ Empty user_id provided to search - returning empty results")
+            return []
+
         try:
-            # FIXED: Use basic search parameters without version/output_format
             search_params = {
                 "query": query,
                 "user_id": user_id,
@@ -246,24 +250,52 @@ class MemoryManager:
                 memories = results.get('results', [])
                 relations = results.get('relations', [])
                 
-                if relations:
-                    logging.info(f"🔗 Found {len(relations)} relationships for {user_id[:8]}…")
+                # ✅ CRITICAL: Filter to ensure ONLY this user's memories
+                verified_memories = []
+                leaked_count = 0
                 
-                if memories:
-                    logging.info(f"🔍 Found {len(memories)} memories for {user_id[:8]}… query: {query[:30]}…")
-                    # Log relevance scores
-                    for mem in memories[:3]:  # Log top 3
+                for mem in memories:
+                    mem_user_id = mem.get('user_id', '')
+                    if mem_user_id == user_id:
+                        verified_memories.append(mem)
+                    else:
+                        leaked_count += 1
+                        logging.error(f"🚨 BLOCKED MEMORY LEAK: {mem_user_id[:8]}... != {user_id[:8]}...")
+                
+                if leaked_count > 0:
+                    logging.error(f"🚨 Prevented {leaked_count} cross-user memories from leaking!")
+                
+                if verified_memories:
+                    logging.info(f"🔍 Found {len(verified_memories)} verified memories for {user_id[:8]}…")
+                    for mem in verified_memories[:3]:
                         score = mem.get('score', 0)
                         content = mem.get('memory', '')[:50]
                         logging.info(f"   Score: {score:.3f} - {content}...")
                 else:
                     logging.info(f"🔍 No memories found for {user_id[:8]}… query: {query[:30]}…")
                 
-                return memories
+                return verified_memories
+                
             elif isinstance(results, list):
-                if results:
-                    logging.info(f"🔍 Found {len(results)} memories for {user_id[:8]}… query: {query[:30]}…")
-                return results
+                # ✅ Filter list results
+                verified_results = []
+                leaked_count = 0
+                
+                for r in results:
+                    r_user_id = r.get('user_id', '') if isinstance(r, dict) else ''
+                    if r_user_id == user_id:
+                        verified_results.append(r)
+                    else:
+                        leaked_count += 1
+                        logging.error(f"🚨 BLOCKED MEMORY LEAK: {r_user_id[:8]}... != {user_id[:8]}...")
+                
+                if leaked_count > 0:
+                    logging.error(f"🚨 Prevented {leaked_count} cross-user memories from leaking!")
+                
+                if verified_results:
+                    logging.info(f"🔍 Found {len(verified_results)} verified memories for {user_id[:8]}…")
+                
+                return verified_results
             else:
                 logging.warning(f"⚠️ Unexpected search response format: {type(results)}")
                 return []
@@ -271,6 +303,7 @@ class MemoryManager:
         except Exception as e:
             logging.error(f"❌ Failed to search memories: {e}")
             return []
+
 
     def add_with_image(self, text: str, image_url: str, user_id: str, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """
@@ -383,6 +416,7 @@ class MemoryManager:
             logging.error(f"❌ Failed to get memory history: {e}")
             return []
 
+    
     def recent_context(self, user_id: str, limit: int = 3) -> List[str]:
         """
         Get recent conversation context for a user.
@@ -391,15 +425,34 @@ class MemoryManager:
         if not self.enabled:
             return []
 
+        # ✅ VALIDATE USER_ID
+        if not user_id or user_id.strip() == "":
+            logging.warning("⚠️ Empty user_id provided to recent_context")
+            return []
+
         try:
-            # FIXED: Use get_all to avoid API issues with empty search
             all_memories = self.memory.get_all(user_id=user_id)
             
             context = []
             memories = all_memories.get('results', []) if isinstance(all_memories, dict) else all_memories
             
-            # Get most recent memories (limited by limit parameter)
-            recent_memories = memories[:limit] if len(memories) > limit else memories
+            # ✅ CRITICAL: Verify user_id match
+            verified_memories = []
+            leaked_count = 0
+            
+            for m in memories:
+                mem_user_id = m.get('user_id', '') if isinstance(m, dict) else ''
+                if mem_user_id == user_id:
+                    verified_memories.append(m)
+                else:
+                    leaked_count += 1
+                    logging.error(f"🚨 BLOCKED MEMORY LEAK in recent_context: {mem_user_id[:8]}... != {user_id[:8]}...")
+            
+            if leaked_count > 0:
+                logging.error(f"🚨 Prevented {leaked_count} cross-user memories from recent_context!")
+            
+            # Get most recent memories
+            recent_memories = verified_memories[:limit] if len(verified_memories) > limit else verified_memories
             
             for result in recent_memories:
                 if isinstance(result, dict):

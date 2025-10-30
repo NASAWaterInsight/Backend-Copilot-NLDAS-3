@@ -617,13 +617,31 @@ def handle_chat_request(data):
         # Get user_id from request data
         user_id = data.get("user_id", f"anonymous_{hash(user_query) % 10000}")
         logging.info(f"👤 User ID: {user_id}")
-        times['validation'] = time.time() - t1
 
         # ===== MEMORY RETRIEVAL =====
         t2 = time.time()
+
+        # ✅ DEBUG: Check if this is a truly new user
+        all_user_memories = memory_manager.get_all(user_id)
+        memory_count = len(all_user_memories) if isinstance(all_user_memories, list) else len(all_user_memories.get('results', []))
+        logging.info(f"📊 User {user_id[:8]}... has {memory_count} total memories in database")
+
         # Retrieve memory context BEFORE sending to agent
         recent_memories = memory_manager.recent_context(user_id, limit=3)
         relevant_memories = memory_manager.search(user_query, user_id, limit=3)
+
+        logging.info(f"📚 Recent memories retrieved: {len(recent_memories)}")
+        logging.info(f"🔍 Relevant memories retrieved: {len(relevant_memories)}")
+
+        # ✅ Validate memory isolation
+        if recent_memories or relevant_memories:
+            # Check that all retrieved memories actually belong to this user
+            for mem in relevant_memories:
+                if isinstance(mem, dict):
+                    mem_user = mem.get('user_id', '')
+                    if mem_user and mem_user != user_id:
+                        logging.error(f"🚨 MEMORY LEAK: Retrieved memory from {mem_user[:8]}... for user {user_id[:8]}...")
+        
 
         # Build enhanced query with memory context
         memory_context_str = ""
