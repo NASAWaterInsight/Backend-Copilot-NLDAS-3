@@ -1,4 +1,4 @@
-# tiles_endpoint.py - FIXED VERSION with consistent color scales
+# tiles_endpoint.py - COMPLETE VERSION with Wind_Speed support
 
 from fastapi import APIRouter, Response, HTTPException
 import mercantile
@@ -49,6 +49,11 @@ VARIABLE_COLOR_SCALES = {
         'vmin': 80000,
         'vmax': 105000,
         'cmap': 'viridis'
+    },
+    'Wind_Speed': {
+        'vmin': 0.0,
+        'vmax': 20.0,
+        'cmap': 'viridis'
     }
 }
 
@@ -69,19 +74,23 @@ async def get_weather_tile(
     z: int,
     x: int,
     y: int,
-    vmin: float = None,  # NEW: Accept region-specific vmin
-    vmax: float = None   # NEW: Accept region-specific vmax
+    vmin: float = None,  # Accept region-specific vmin
+    vmax: float = None,  # Accept region-specific vmax
+    cmap: str = None     # ✅ FIXED: Accept colormap parameter
 ):
     """
     Generate a 256x256 weather tile with REGION-SPECIFIC color scale
     ✅ ALWAYS returns exactly 256x256 pixels for Azure Maps compatibility
+    ✅ Supports Wind_Speed calculation from Wind_E and Wind_N components
     """
     try:
-        logging.info(f"🗺️ Tile request: {variable}/{date}/{z}/{x}/{y}")
+        logging.info(f"🗺️ Tile request: {variable}/{date}/{z}/{x}/{y} (cmap={cmap})")
         
         # ✅ Get GLOBAL color scale for this variable (same for all tiles!)
         color_config = get_color_scale(variable)
-        cmap_name = color_config['cmap']
+        
+        # ✅ FIXED: Use cmap parameter if provided, otherwise fall back to default
+        cmap_name = cmap if cmap else color_config['cmap']
         
         # STEP 1: Get tile bounds
         tile = mercantile.Tile(x, y, z)
@@ -112,7 +121,7 @@ async def get_weather_tile(
         
         logging.info(f"📊 Coordinates: lat={lat_coords.min():.2f} to {lat_coords.max():.2f} ({'DESC' if lat_descending else 'ASC'})")
         
-        # STEP 4: Slice data
+        # STEP 4: Prepare slices
         if lat_descending:
             lat_slice = slice(bounds.north, bounds.south)
         else:
@@ -120,20 +129,90 @@ async def get_weather_tile(
         
         lon_slice = slice(bounds.west, bounds.east)
         
-        data = ds[variable].sel(
-            **{lat_name: lat_slice, lon_name: lon_slice}
-        )
-        
-        logging.info(f"📊 Sliced data shape: {data.shape}")
-        
-        # STEP 5: Process temporal dimension
-        if variable != 'SPI3':
-            if variable == 'Tair':
-                data = data.mean(dim='time') - 273.15  # Convert to Celsius
-            elif variable == 'Rainf':
-                data = data.sum(dim='time')
-            else:
-                data = data.mean(dim='time')
+        # STEP 4.5: ✅ CRITICAL: Handle Wind_Speed specially
+        if variable == 'Wind_Speed' or variable == 'wind_speed':
+            logging.info("🌬️ Calculating Wind_Speed from Wind_E and Wind_N components")
+            
+            try:
+                # Load both wind components with error handling
+                wind_e = ds['Wind_E'].sel(
+                    **{lat_name: lat_slice, lon_name: lon_slice}
+                )
+                wind_n = ds['Wind_N'].sel(
+                    **{lat_name: lat_slice, lon_name: lon_slice}
+                )
+                
+                logging.info(f"📊 Wind_E shape: {wind_e.shape}, Wind_N shape: {wind_n.shape}")
+                
+                # ✅ CRITICAL: Check for empty data BEFORE processing
+                if wind_e.size == 0 or wind_n.size == 0:
+                    logging.warning(f"⚠️ Empty wind component data for tile {z}/{x}/{y}")
+                    img = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
+                    buffer = io.BytesIO()
+                    img.save(buffer, format='PNG', optimize=True)
+                    buffer.seek(0)
+                    ds.close()
+                    return Response(content=buffer.getvalue(), media_type='image/png')
+                
+                # Apply temporal averaging FIRST (before calculating magnitude)
+                if 'time' in wind_e.dims:
+                    wind_e = wind_e.mean(dim='time')
+                    logging.info("✅ Averaged Wind_E over time")
+                if 'time' in wind_n.dims:
+                    wind_n = wind_n.mean(dim='time')
+                    logging.info("✅ Averaged Wind_N over time")
+                
+                # ✅ CRITICAL: Check again after temporal averaging
+                if wind_e.size == 0 or wind_n.size == 0:
+                    logging.warning(f"⚠️ Empty wind data after time averaging for tile {z}/{x}/{y}")
+                    img = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
+                    buffer = io.BytesIO()
+                    img.save(buffer, format='PNG', optimize=True)
+                    buffer.seek(0)
+                    ds.close()
+                    return Response(content=buffer.getvalue(), media_type='image/png')
+                
+                # Calculate wind speed magnitude: sqrt(Wind_E² + Wind_N²)
+                data = np.sqrt(wind_e**2 + wind_n**2)
+                
+                # ✅ CRITICAL: Validate result before proceeding
+                if data.size == 0:
+                    logging.warning(f"⚠️ Zero-size wind speed array for tile {z}/{x}/{y}")
+                    img = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
+                    buffer = io.BytesIO()
+                    img.save(buffer, format='PNG', optimize=True)
+                    buffer.seek(0)
+                    ds.close()
+                    return Response(content=buffer.getvalue(), media_type='image/png')
+                
+                logging.info(f"✅ Calculated wind speed: min={float(data.min()):.2f}, max={float(data.max()):.2f} m/s")
+                
+            except Exception as wind_error:
+                logging.error(f"❌ Wind speed calculation failed for tile {z}/{x}/{y}: {wind_error}")
+                img = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG', optimize=True)
+                buffer.seek(0)
+                ds.close()
+                return Response(content=buffer.getvalue(), media_type='image/png')
+
+        else:
+            # Normal variable loading
+            data = ds[variable].sel(
+                **{lat_name: lat_slice, lon_name: lon_slice}
+            )
+            
+            logging.info(f"📊 Sliced data shape: {data.shape}")
+            
+            # STEP 5: Process temporal dimension
+            if variable != 'SPI3':
+                if variable == 'Tair':
+                    data = data.mean(dim='time') - 273.15  # Convert to Celsius
+                elif variable == 'Rainf':
+                    data = data.sum(dim='time')
+                else:
+                    if 'time' in data.dims:
+                        data = data.mean(dim='time')
         
         # STEP 6: Extract values
         if hasattr(data, 'squeeze'):
@@ -198,16 +277,16 @@ async def get_weather_tile(
         if not valid_mask.any():
             img = Image.new('RGBA', (target_size, target_size), (0, 0, 0, 0))
         else:
-            # NEW: Use region-specific scale if provided, otherwise use variable defaults
+            # Use region-specific scale if provided, otherwise use variable defaults
             if vmin is not None and vmax is not None:
                 # Use the region-specific scale passed from backend
                 tile_vmin, tile_vmax = float(vmin), float(vmax)
-                logging.info(f"🎨 Using REGION-SPECIFIC scale: [{tile_vmin:.2f}, {tile_vmax:.2f}]")
+                logging.info(f"🎨 Using REGION-SPECIFIC scale: [{tile_vmin:.2f}, {tile_vmax:.2f}], cmap={cmap_name}")
             else:
                 # Fallback to variable-specific defaults
                 tile_vmin = color_config['vmin']
                 tile_vmax = color_config['vmax']
-                logging.info(f"🎨 Using DEFAULT scale: [{tile_vmin:.2f}, {tile_vmax:.2f}]")
+                logging.info(f"🎨 Using DEFAULT scale: [{tile_vmin:.2f}, {tile_vmax:.2f}], cmap={cmap_name}")
             
             # Normalize using region-specific scale
             if tile_vmax == tile_vmin:
@@ -216,15 +295,15 @@ async def get_weather_tile(
                 normalized = (values - tile_vmin) / (tile_vmax - tile_vmin)
                 normalized = np.clip(normalized, 0, 1)
             
-            # Create RGBA image
-            cmap = cm.get_cmap(cmap_name)
-            rgba = (cmap(normalized) * 255).astype(np.uint8)
+            # ✅ FIXED: Create RGBA image with the correct colormap
+            cmap_obj = cm.get_cmap(cmap_name)
+            rgba = (cmap_obj(normalized) * 255).astype(np.uint8)
             
             # Set invalid pixels to transparent
             rgba[~valid_mask, 3] = 0
             
             img = Image.fromarray(rgba, 'RGBA')
-            logging.info(f"✅ Generated tile: {img.size}, region-specific colors")
+            logging.info(f"✅ Generated tile: {img.size}, region-specific colors with {cmap_name}")
         
         # ✅ Final verification before return
         assert img.size == (target_size, target_size), f"Final image must be {target_size}x{target_size}, got {img.size}"
@@ -246,7 +325,8 @@ async def get_weather_tile(
                 'Access-Control-Allow-Origin': '*',
                 'X-Tile-Coords': f'{z}/{x}/{y}',
                 'X-Tile-Size': f'{target_size}x{target_size}',
-                'X-Color-Scale': f'{tile_vmin},{tile_vmax}' if vmin is not None else 'default'
+                'X-Color-Scale': f'{tile_vmin},{tile_vmax}' if vmin is not None else 'default',
+                'X-Colormap': cmap_name  # ✅ FIXED: Include colormap in headers
             }
         )
         

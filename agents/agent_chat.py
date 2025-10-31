@@ -49,21 +49,18 @@ def _get_run(thread_id: str, run_id: str):
 
 def determine_optimal_zoom_level(bounds: dict) -> int:
     """
-    Area-based zoom selection for optimal tile count
+    Area-based zoom selection with proper exponential scaling
     
-    Strategy: Linear scaling with area
-    - Target: 2.5 tiles per 100 square degrees
-    - Min: 6 tiles (small regions)
-    - Max: 300 tiles (continental scale)
-    
-    Examples:
-    - Maryland (8 sq°): ~6 tiles at zoom 8
-    - Florida (56 sq°): ~8 tiles at zoom 7
-    - California (420 sq°): ~12 tiles at zoom 7
-    - Alaska (840 sq°): ~24 tiles at zoom 6
-    - CONUS (8000 sq°): ~200 tiles at zoom 5
+    Strategy: Use tiered approach that matches real-world needs
+    - Cities (< 1 sq°): 6-15 tiles at zoom 8-9
+    - Small states (1-10 sq°): 12-30 tiles at zoom 7-8
+    - Medium states (10-100 sq°): 30-80 tiles at zoom 6-7
+    - Large states (100-500 sq°): 80-200 tiles at zoom 5-6
+    - Huge regions (500-2000 sq°): 150-400 tiles at zoom 4-5
+    - Continental (> 2000 sq°): 300-600 tiles at zoom 3-4
     """
     import mercantile
+    import math
     
     lat_span = bounds["north"] - bounds["south"]
     lng_span = bounds["east"] - bounds["west"]
@@ -72,331 +69,287 @@ def determine_optimal_zoom_level(bounds: dict) -> int:
     logging.info(f"🗺️ Region bounds: N={bounds['north']:.2f}, S={bounds['south']:.2f}, E={bounds['east']:.2f}, W={bounds['west']:.2f}")
     logging.info(f"📐 Region area: {area:.2f} sq degrees ({lat_span:.2f}° × {lng_span:.2f}°)")
     
-    # HARDCODED: California override (if you still want this)
-    if (31 <= bounds["south"] <= 33 and 
-        41 <= bounds["north"] <= 43 and 
-        -126 <= bounds["west"] <= -124 and 
-        -115 <= bounds["east"] <= -113):
-        logging.info("🗺️ Detected California - using hardcoded zoom 7")
-        return 7
+    # ✅ NEW: Tiered zoom selection based on area
+    if area < 1:  # Cities and small areas
+        target_zoom = 9
+        target_tiles = 10
+        logging.info("📍 Small area detected (city/county)")
+    elif area < 10:  # Small states (Maryland, Delaware)
+        target_zoom = 8
+        target_tiles = 20
+        logging.info("🏛️ Small state detected")
+    elif area < 50:  # Medium states (Florida, Indiana)
+        target_zoom = 7
+        target_tiles = 50
+        logging.info("🏞️ Medium state detected")
+    elif area < 150:  # Large states (California, Texas)
+        target_zoom = 6
+        target_tiles = 100
+        logging.info("🌄 Large state detected")
+    elif area < 500:  # Huge states (Alaska) or regions (Midwest)
+        target_zoom = 5
+        target_tiles = 200
+        logging.info("🗻 Huge state/region detected")
+    elif area < 2000:  # Multi-state regions
+        target_zoom = 4
+        target_tiles = 350
+        logging.info("🌎 Multi-state region detected")
+    else:  # Continental scale (CONUS, North America)
+        target_zoom = 3
+        target_tiles = 500
+        logging.info("🌍 Continental scale detected")
     
-    # LINEAR SCALING: 2.5 tiles per 100 square degrees
-    TILES_PER_100_SQ_DEGREES = 2.5
-    target_tiles = (area / 100.0) * TILES_PER_100_SQ_DEGREES
-    
-    # Apply constraints
-    MIN_TILES = 6
-    MAX_TILES = 300
-    target_tiles = max(MIN_TILES, min(MAX_TILES, target_tiles))
-    
-    logging.info(f"🎯 Target tiles: {target_tiles:.0f} (formula: {area:.1f}/100 × {TILES_PER_100_SQ_DEGREES})")
-    
-    # Find zoom level that produces closest tile count
-    best_zoom = 6
-    best_diff = float('inf')
-    best_count = 0
-    
-    for zoom in range(3, 11):
-        try:
-            nw_tile = mercantile.tile(bounds["west"], bounds["north"], zoom)
-            se_tile = mercantile.tile(bounds["east"], bounds["south"], zoom)
+    # Calculate actual tiles at target zoom
+    try:
+        nw_tile = mercantile.tile(bounds["west"], bounds["north"], target_zoom)
+        se_tile = mercantile.tile(bounds["east"], bounds["south"], target_zoom)
+        
+        tile_count_x = se_tile.x - nw_tile.x + 1
+        tile_count_y = se_tile.y - nw_tile.y + 1
+        actual_tiles = tile_count_x * tile_count_y
+        
+        logging.info(f"🎯 Target zoom {target_zoom}: {tile_count_x} × {tile_count_y} = {actual_tiles} tiles")
+        
+        # ✅ ADAPTIVE: If actual tiles are way off from target, try adjacent zoom levels
+        if actual_tiles < target_tiles * 0.5 and target_zoom > 3:
+            # Too few tiles, zoom in one level
+            test_zoom = target_zoom + 1
+            test_nw = mercantile.tile(bounds["west"], bounds["north"], test_zoom)
+            test_se = mercantile.tile(bounds["east"], bounds["south"], test_zoom)
+            test_tiles = (test_se.x - test_nw.x + 1) * (test_se.y - test_nw.y + 1)
             
-            tile_count_x = se_tile.x - nw_tile.x + 1
-            tile_count_y = se_tile.y - nw_tile.y + 1
-            total_tiles = tile_count_x * tile_count_y
+            if test_tiles <= 600:  # Don't exceed performance limit
+                logging.info(f"⬆️ Zooming in: {test_tiles} tiles at zoom {test_zoom}")
+                return test_zoom
+        
+        elif actual_tiles > target_tiles * 2 and target_zoom < 10:
+            # Too many tiles, zoom out one level
+            test_zoom = target_zoom - 1
+            test_nw = mercantile.tile(bounds["west"], bounds["north"], test_zoom)
+            test_se = mercantile.tile(bounds["east"], bounds["south"], test_zoom)
+            test_tiles = (test_se.x - test_nw.x + 1) * (test_se.y - test_nw.y + 1)
             
-            diff = abs(total_tiles - target_tiles)
-            
-            logging.info(f"  Zoom {zoom}: {tile_count_x} × {tile_count_y} = {total_tiles} tiles (diff from target: {diff:.0f})")
-            
-            if diff < best_diff:
-                best_diff = diff
-                best_zoom = zoom
-                best_count = total_tiles
-                
-        except Exception as e:
-            logging.warning(f"  Zoom {zoom}: Failed to calculate tiles - {e}")
-            continue
-    
-    logging.info(f"✅ Selected zoom {best_zoom}: {best_count} tiles (target was {target_tiles:.0f})")
-    logging.info(f"📊 Coverage: Each tile ≈ {area/best_count:.1f} sq degrees")
-    
-    return best_zoom
-
-
-
-
+            if test_tiles >= 6:  # Don't go below minimum
+                logging.info(f"⬇️ Zooming out: {test_tiles} tiles at zoom {test_zoom}")
+                return test_zoom
+        
+        logging.info(f"✅ Final: zoom {target_zoom} with {actual_tiles} tiles")
+        logging.info(f"📊 Coverage: Each tile ≈ {area/actual_tiles:.2f} sq degrees")
+        
+        return target_zoom
+        
+    except Exception as e:
+        logging.error(f"❌ Error calculating tiles: {e}")
+        # Safe fallback
+        if area < 10:
+            return 8
+        elif area < 100:
+            return 7
+        elif area < 500:
+            return 6
+        else:
+            return 5
 
 def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) -> dict:
     """
-    Create tile configuration from either raw data or pre-computed data
-    
-    Priority order:
-    1. Pre-computed data (for differences, averages, custom calculations)
-    2. Raw data (for single date/month queries)
-    
+    Create tile configuration
     Args:
-        map_data: Map result with bounds and metadata
-        user_query: Original user query (for logging only)
-        date_info: Pre-extracted date info from extract_analysis_info()
-    
-    Returns:
-        dict: Tile configuration with tile_url, zoom, bounds, etc.
-              OR dict with "error" key if parameters cannot be determined
+        map_data: Map result with bounds
+        user_query: Original user query
+        date_info: Pre-extracted date info from extract_analysis_info() (optional)
     """
     import re
     import mercantile
     
-    logging.info(f"🔍 create_tile_config called")
-    logging.info(f"  📝 Query: {user_query}")
-    
-    # ✅ CRITICAL: ONLY use metadata - no fallbacks, no parsing
-    if not date_info or date_info.get("error"):
-        logging.error(f"❌ No date_info provided: {date_info}")
-        return {"error": "Missing metadata from map generation"}
-    
-    variable = date_info.get("variable")
-    date_str = date_info.get("date_str")
-    region = date_info.get("region", "unknown")
-    
-    if not variable or not date_str:
-        logging.error(f"❌ Incomplete metadata: variable={variable}, date={date_str}")
-        return {"error": f"Incomplete metadata: variable={variable}, date={date_str}"}
-    
-    logging.info(f"✅ Using metadata: variable={variable}, date={date_str}, region={region}")
-    
-    # Get bounds from map data (these are the ACTUAL bounds used)
-    bounds = map_data.get("bounds", {})
-    if not bounds or not all(k in bounds for k in ["north", "south", "east", "west"]):
-        logging.error(f"❌ Invalid bounds: {bounds}")
-        return {"error": "Invalid geographic bounds"}
-    
-    north = float(bounds["north"])
-    south = float(bounds["south"])
-    east = float(bounds["east"])
-    west = float(bounds["west"])
-    
-    logging.info(f"🗺️  Using EXACT bounds from static map:")
-    logging.info(f"   N={north:.4f}, S={south:.4f}, E={east:.4f}, W={west:.4f}")
-    
-    # ✅ NEW: Check if we have pre-computed data
-    metadata = map_data.get("metadata", {})
-    computation_type = metadata.get("computation_type", "raw")
-    computed_data_url = metadata.get("computed_data_url")
-    computed_data_hash = metadata.get("computed_data_hash")
-    
-    logging.info(f"📊 Computation type: {computation_type}")
-    
-    if computed_data_url and computed_data_hash and computation_type != "raw":
-        # ✅ USE PRE-COMPUTED DATA for tiles
-        logging.info(f"✅ Using pre-computed data: {computed_data_url}")
-        logging.info(f"   Hash: {computed_data_hash}")
+    # ✅ Use pre-extracted date info if available
+    if date_info:
+        variable = date_info.get("variable", "Tair")
+        date_str = date_info.get("date_str")
         
-        # Get color scale from metadata (what was actually used in static map)
-        color_scale = metadata.get("color_scale", {})
-        vmin = color_scale.get("vmin")
-        vmax = color_scale.get("vmax")
-        cmap = color_scale.get("cmap", "viridis")
-        
-        if vmin is None or vmax is None:
-            logging.error(f"❌ Missing color scale in metadata")
-            return {"error": "Missing color scale for computed data"}
-        
-        logging.info(f"🎨 Using color scale from metadata: {vmin:.2f} to {vmax:.2f}, cmap={cmap}")
-        
-        # Calculate zoom
-        zoom = determine_optimal_zoom_level(bounds)
-        
-        # Generate tile grid
-        nw_tile = mercantile.tile(west, north, zoom)
-        se_tile = mercantile.tile(east, south, zoom)
-        
-        tile_count_x = se_tile.x - nw_tile.x + 1
-        tile_count_y = se_tile.y - nw_tile.y + 1
-        total_tiles = tile_count_x * tile_count_y
-        
-        logging.info(f"🎯 Tile grid: {tile_count_x} × {tile_count_y} = {total_tiles} tiles at zoom {zoom}")
-        
-        # Generate tile list with computed data endpoint
-        tile_list = []
-        for x in range(nw_tile.x, se_tile.x + 1):
-            for y in range(nw_tile.y, se_tile.y + 1):
-                tile_bounds = mercantile.bounds(mercantile.Tile(x, y, zoom))
-                tile_list.append({
-                    "z": zoom,
-                    "x": x,
-                    "y": y,
-                    "url": f"http://localhost:8000/api/tiles/computed/{computed_data_hash}/{zoom}/{x}/{y}.png?vmin={vmin}&vmax={vmax}&cmap={cmap}",
-                    "bounds": {
-                        "north": tile_bounds.north,
-                        "south": tile_bounds.south,
-                        "east": tile_bounds.east,
-                        "west": tile_bounds.west
-                    }
-                })
-        
-        logging.info(f"✅ Generated {len(tile_list)} tiles from pre-computed data")
-        
-        return {
-            "tile_url": f"http://localhost:8000/api/tiles/computed/{computed_data_hash}/{{z}}/{{x}}/{{y}}.png?vmin={vmin}&vmax={vmax}&cmap={cmap}",
-            "variable": variable,
-            "date": date_str,
-            "computation_type": computation_type,
-            "computation_description": metadata.get("computation_description"),
-            "zoom": zoom,
-            "min_zoom": max(3, zoom - 1),
-            "max_zoom": min(10, zoom + 2),
-            "tile_size": 256,
-            "tile_list": tile_list,
-            "region_bounds": {"north": north, "south": south, "east": east, "west": west},
-            "tile_count": len(tile_list),
-            "color_scale": {
-                "vmin": float(vmin),
-                "vmax": float(vmax),
-                "cmap": cmap,
-                "variable": variable
-            },
-            "uses_precomputed_data": True,
-            "computed_data_hash": computed_data_hash
-        }
-    
+        # Parse date_str to get year, month, day
+        if date_str:
+            date_parts = date_str.split('-')
+            year = int(date_parts[0])
+            month = int(date_parts[1])
+            day = int(date_parts[2]) if len(date_parts) > 2 else None
+            
+            logging.info(f"🗓️ Using pre-extracted date info: {date_str}, {variable}")
+        else:
+            return {"error": "No date in extracted info"}
     else:
-        # ✅ RAW DATA - existing logic for single date loading
-        logging.info(f"✅ Using raw data tiles (single date/month)")
+        # Fall back to query parsing
+        year_match = re.search(r'(20\d{2})', user_query)
+        if not year_match:
+            return {"error": "No year specified in query"}
+        year = int(year_match.group(1))
         
-        # Parse date to get year, month, day
-        date_parts = date_str.split('-')
-        year = int(date_parts[0])
-        month = int(date_parts[1])
-        day = int(date_parts[2]) if len(date_parts) > 2 else None
+        month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_query.lower())
+        if not month_match:
+            return {"error": "No month specified in query"}
+        month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
+        month = month_names.index(month_match.group(1)) + 1
         
-        logging.info(f"📅 Loading data for: {year}-{month:02d}" + (f"-{day:02d}" if day else ""))
+        variable = 'Tair'  # Default
+        if any(word in user_query.lower() for word in ['precipitation', 'rain', 'rainfall']):
+            variable = 'Rainf'
+        elif any(word in user_query.lower() for word in ['drought', 'spi']):
+            variable = 'SPI3'
         
-        # Calculate actual data range for this region
-        try:
-            from .weather_tool import (
-                load_specific_date_kerchunk,
-                load_specific_month_spi_kerchunk,
-                get_account_key,
-                ACCOUNT_NAME
+        # For daily variables, require day specification
+        day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', user_query)
+        if variable != 'SPI3' and (not day_match or not (1 <= int(day_match.group(1)) <= 31)):
+            return {"error": "No valid day specified in query"}
+        day = int(day_match.group(1)) if day_match else None
+    
+    # Build date_str if not already set
+    if not date_info or not date_str:
+        if variable == 'SPI3':
+            date_str = f"{year}-{month:02d}"
+        else:
+            date_str = f"{year}-{month:02d}-{day:02d}"
+    
+    # Get bounds from map data
+    bounds = map_data.get("bounds", {})
+    if not bounds:
+        logging.error("❌ No bounds provided in map_data")
+        return {"error": "No geographic bounds available"}
+    
+    north = float(bounds.get("north"))
+    south = float(bounds.get("south"))
+    east = float(bounds.get("east"))
+    west = float(bounds.get("west"))
+    
+    logging.info(f"🗺️ Creating tiles for: N={north:.2f}, S={south:.2f}, W={west:.2f}, E={east:.2f}")
+
+    # ✅ FIXED: Get the correct colormap for the variable
+    variable_cmaps = {
+        'Tair': 'RdYlBu_r',
+        'Rainf': 'Blues',
+        'SPI3': 'RdBu',
+        'Qair': 'BrBG',
+        'PSurf': 'viridis',
+        'Wind_Speed': 'viridis'
+    }
+    cmap = variable_cmaps.get(variable, 'viridis')
+
+    # Calculate actual data range for this region
+    try:
+        from .weather_tool import (
+            load_specific_date_kerchunk,
+            load_specific_month_spi_kerchunk,
+            get_account_key,
+            ACCOUNT_NAME
+        )
+        
+        account_key = get_account_key()
+        
+        if variable == 'SPI3':
+            ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
+            data = ds[variable].sel(
+                latitude=builtins.slice(south, north),
+                longitude=builtins.slice(west, east)
+            )
+            region_vmin, region_vmax = -2.5, 2.5
+        else:
+            ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
+            data = ds[variable].sel(
+                lat=builtins.slice(south, north),
+                lon=builtins.slice(west, east)
             )
             
-            account_key = get_account_key()
-            
-            if variable == 'SPI3':
-                ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
-                data = ds[variable].sel(
-                    latitude=builtins.slice(south, north),
-                    longitude=builtins.slice(west, east)
-                )
-                if hasattr(data, 'squeeze'):
-                    data = data.squeeze()
-                region_vmin, region_vmax = -2.5, 2.5
-            else:
-                ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
-                data = ds[variable].sel(
-                    lat=builtins.slice(south, north),
-                    lon=builtins.slice(west, east)
-                )
-                
-                # Apply EXACT same processing as static map
-                if variable == 'Tair':
-                    data = data.mean(dim='time') - 273.15
-                elif variable == 'Rainf':
-                    data = data.sum(dim='time')
-                else:
-                    data = data.mean(dim='time')
-                
-                if hasattr(data, 'squeeze'):
-                    data = data.squeeze()
-                
-                # Calculate percentile-based scale (same as static map)
-                valid_data = data.values[np.isfinite(data.values)]
-                if len(valid_data) > 0:
-                    region_vmin, region_vmax = np.percentile(valid_data, [2, 98])
-                    
-                    # Prevent collapsed range
-                    if abs(region_vmax - region_vmin) < 0.1:
-                        center = (region_vmin + region_vmax) / 2
-                        region_vmin = center - 1.0
-                        region_vmax = center + 1.0
-                else:
-                    # Fallback defaults
-                    if variable == 'Tair':
-                        region_vmin, region_vmax = -10, 30
-                    elif variable == 'Rainf':
-                        region_vmin, region_vmax = 0, 50
-                    else:
-                        region_vmin, region_vmax = 0, 100
-            
-            ds.close()
-            logging.info(f"🎨 Calculated scale from actual data: {region_vmin:.2f} to {region_vmax:.2f}")
-            
-        except Exception as scale_error:
-            logging.error(f"❌ Failed to calculate region scale: {scale_error}")
-            # Use defaults based on variable
-            if variable == 'SPI3':
-                region_vmin, region_vmax = -2.5, 2.5
-            elif variable == 'Tair':
-                region_vmin, region_vmax = -10, 30
+            # Process the data
+            if variable == 'Tair':
+                data = data.mean(dim='time') - 273.15
             elif variable == 'Rainf':
-                region_vmin, region_vmax = 0, 50
+                data = data.sum(dim='time')
             else:
-                region_vmin, region_vmax = 0, 100
-        
-        # Calculate zoom
-        zoom = determine_optimal_zoom_level(bounds)
-        
-        # Generate tile grid
-        nw_tile = mercantile.tile(west, north, zoom)
-        se_tile = mercantile.tile(east, south, zoom)
-        
-        tile_count_x = se_tile.x - nw_tile.x + 1
-        tile_count_y = se_tile.y - nw_tile.y + 1
-        total_tiles = tile_count_x * tile_count_y
-        
-        logging.info(f"🎯 Tile grid: {tile_count_x} × {tile_count_y} = {total_tiles} tiles at zoom {zoom}")
-        
-        # Generate tile list
-        tile_list = []
-        for x in range(nw_tile.x, se_tile.x + 1):
-            for y in range(nw_tile.y, se_tile.y + 1):
-                tile_bounds = mercantile.bounds(mercantile.Tile(x, y, zoom))
+                data = data.mean(dim='time')
+            
+            if hasattr(data, 'squeeze'):
+                data = data.squeeze()
+            
+            valid_data = data.values[np.isfinite(data.values)]
+            if len(valid_data) > 0:
+                region_vmin, region_vmax = np.percentile(valid_data, [2, 98])
                 
-                tile_list.append({
-                    "z": zoom,
-                    "x": x,
-                    "y": y,
-                    "url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{zoom}/{x}/{y}.png?vmin={region_vmin}&vmax={region_vmax}",
-                    "bounds": {
-                        "north": tile_bounds.north,
-                        "south": tile_bounds.south,
-                        "east": tile_bounds.east,
-                        "west": tile_bounds.west
-                    }
-                })
+                if abs(region_vmax - region_vmin) < 0.1:
+                    center = (region_vmin + region_vmax) / 2
+                    region_vmin = center - 1.0
+                    region_vmax = center + 1.0
+            else:
+                if variable == 'Tair':
+                    region_vmin, region_vmax = -10, 30
+                elif variable == 'Rainf':
+                    region_vmin, region_vmax = 0, 50
+                else:
+                    region_vmin, region_vmax = 0, 100
         
-        logging.info(f"✅ Generated {len(tile_list)} tiles")
+        ds.close()
+        logging.info(f"🎨 Region-specific scale: {region_vmin:.2f} to {region_vmax:.2f}, cmap={cmap}")
         
-        return {
-            "tile_url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png?vmin={region_vmin}&vmax={region_vmax}",
-            "variable": variable,
-            "date": date_str,
-            "zoom": zoom,
-            "min_zoom": max(3, zoom - 1),
-            "max_zoom": min(10, zoom + 2),
-            "tile_size": 256,
-            "tile_list": tile_list,
-            "region_bounds": {"north": north, "south": south, "east": east, "west": west},
-            "tile_count": len(tile_list),
-            "color_scale": {
-                "vmin": float(region_vmin),
-                "vmax": float(region_vmax),
-                "variable": variable
-            },
-            "uses_precomputed_data": False
+    except Exception as scale_error:
+        logging.error(f"❌ Failed to calculate region scale: {scale_error}")
+        if variable == 'SPI3':
+            region_vmin, region_vmax = -2.5, 2.5
+        elif variable == 'Tair':
+            region_vmin, region_vmax = -10, 30
+        elif variable == 'Rainf':
+            region_vmin, region_vmax = 0, 50
+        else:
+            region_vmin, region_vmax = 0, 100
+    
+    # ✅ USE AREA-BASED ZOOM - DO NOT OVERRIDE IT
+    zoom = determine_optimal_zoom_level(bounds)
+    
+    # Generate tile list using the calculated zoom
+    nw_tile = mercantile.tile(west, north, zoom)
+    se_tile = mercantile.tile(east, south, zoom)
+    
+    tile_count_x = se_tile.x - nw_tile.x + 1
+    tile_count_y = se_tile.y - nw_tile.y + 1
+    total_tiles = tile_count_x * tile_count_y
+    
+    logging.info(f"🎯 Final tile grid: {tile_count_x} × {tile_count_y} = {total_tiles} tiles at zoom {zoom}")
+    
+    # ✅ FIXED: Generate tile list with cmap parameter
+    tile_list = []
+    for x in range(nw_tile.x, se_tile.x + 1):
+        for y in range(nw_tile.y, se_tile.y + 1):
+            tile_bounds = mercantile.bounds(mercantile.Tile(x, y, zoom))
+            
+            tile_list.append({
+                "z": zoom,
+                "x": x,
+                "y": y,
+                "url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{zoom}/{x}/{y}.png?vmin={region_vmin}&vmax={region_vmax}&cmap={cmap}",
+                "bounds": {
+                    "north": tile_bounds.north,
+                    "south": tile_bounds.south,
+                    "east": tile_bounds.east,
+                    "west": tile_bounds.west
+                }
+            })
+    
+    logging.info(f"✅ Generated {len(tile_list)} tiles: X={nw_tile.x}-{se_tile.x}, Y={nw_tile.y}-{se_tile.y} (256x256 each)")
+    
+    return {
+        "tile_url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png?vmin={region_vmin}&vmax={region_vmax}&cmap={cmap}",
+        "variable": variable,
+        "date": date_str,
+        "zoom": zoom,
+        "min_zoom": max(3, zoom - 1),
+        "max_zoom": min(10, zoom + 2),
+        "tile_size": 256,
+        "tile_list": tile_list,
+        "region_bounds": {"north": north, "south": south, "east": east, "west": west},
+        "tile_count": len(tile_list),
+        "color_scale": {
+            "vmin": float(region_vmin),
+            "vmax": float(region_vmax),
+            "cmap": cmap,  # ✅ FIXED: Include cmap in color_scale
+            "variable": variable
         }
-
+    }
 
 def wrap_with_geo_overlay(static_url: str, original_query: str) -> dict:
     """
@@ -515,7 +468,6 @@ def build_temperature_data(geojson: dict, target_max_points: int = 2500) -> list
             "originalValue": val,
             "location": f"{lat:.2f}, {lon:.2f}"
         })
-    # Ensure extremes included
     def add_extreme(feat):
         if not feat:
             return

@@ -229,6 +229,39 @@ data_jan1_5_avg = precip_sum / 5
 # COMPUTE DIFFERENCE
 computed_data = data_jan20 - data_jan1_5_avg
 
+🚨 CRITICAL: COLOR SCALE CONSISTENCY
+When creating static maps, you MUST capture and store the EXACT color scale used:
+```python
+# After creating static map with create_cartopy_map or custom plotting:
+mappable = ax.collections[0] if ax.collections else None
+if mappable:
+    vmin, vmax = mappable.get_clim()
+else:
+    vmin, vmax = float(np.nanmin(data.values)), float(np.nanmax(data.values))
+
+# Store in metadata with EXACT cmap used
+result = {
+    "static_url": static_url,
+    "metadata": {
+        "color_scale": {
+            "vmin": float(vmin),  # ✅ EXACT value from static map
+            "vmax": float(vmax),  # ✅ EXACT value from static map  
+            "cmap": "RdYlBu_r"    # ✅ EXACT cmap name used
+        }
+    }
+}
+```
+
+For Wind_Speed, ALWAYS use this pattern to match static map:
+```python
+wind_e = ds['Wind_E'].sel(...).mean(dim='time')
+wind_n = ds['Wind_N'].sel(...).mean(dim='time')
+data = np.sqrt(wind_e**2 + wind_n**2)
+
+# Then create map with viridis cmap
+fig, ax = create_cartopy_map(data.lon, data.lat, data.values, 'Wind Speed', 'Wind Speed (m/s)', 'viridis')
+```
+
 # Calculate color scale
 vmin = float(np.nanpercentile(computed_data.values, 2))
 vmax = float(np.nanpercentile(computed_data.values, 98))
@@ -339,7 +372,7 @@ NLDAS Daily Variables (use load_specific_date_kerchunk):
 - Temperature = 'Tair' (convert: subtract 273.15 for Celsius)
 - Precipitation = 'Rainf' (unit is already mm - kg/m² equals mm)
 - Humidity = 'Qair' 
-- Wind = 'Wind_E' or 'Wind_N'
+- Wind Speed = Calculate from 'Wind_E' and 'Wind_N' using: wind_speed = sqrt(Wind_E² + Wind_N²)
 - Pressure = 'PSurf'
 - Solar radiation = 'SWdown'
 - Longwave radiation = 'LWdown'
@@ -404,6 +437,87 @@ SPI/Drought Monthly Variables (use load_specific_month_spi_kerchunk):
 IMPORTANT: SPI data uses different coordinate names:
 - Use 'latitude' and 'longitude' for SPI data (not 'lat' and 'lon')
 - Use data.longitude, data.latitude when creating maps from SPI data
+
+FOR WIND SPEED MAPS - copy this pattern:
+```python
+import builtins, json, numpy as np
+lat_min, lat_max = 32.5, 42.0  # California
+lon_min, lon_max = -124.4, -114.1
+
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 3, 12)
+
+
+# ✅ CRITICAL: Load BOTH wind components
+wind_e = ds['Wind_E'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).mean(dim='time')
+wind_n = ds['Wind_N'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).mean(dim='time')
+
+# Calculate wind speed magnitude
+data = np.sqrt(wind_e**2 + wind_n**2)
+
+# Create static map
+fig, ax = create_cartopy_map(data.lon, data.lat, data.values,
+                             'Average Wind Speed - California, March 12, 2023',
+                             'Wind Speed (m/s)', 'viridis')
+mappable = ax.collections[0] if ax.collections else None
+if mappable:
+    vmin, vmax = mappable.get_clim()
+else:
+    vmin, vmax = float(np.nanmin(data.values)), float(np.nanmax(data.values))
+static_url = save_plot_to_blob_simple(fig, 'wind_static.png', account_key)
+
+# Transparent overlay
+fig2 = plt.figure(figsize=(10, 8), frameon=False, dpi=200)
+fig2.patch.set_alpha(0)
+ax2 = fig2.add_axes([0,0,1,1])
+ax2.set_axis_off()
+ax2.set_facecolor('none')
+ax2.set_xlim(lon_min, lon_max)
+ax2.set_ylim(lat_min, lat_max)
+lon_grid, lat_grid = np.meshgrid(data.lon, data.lat)
+masked = np.ma.masked_invalid(data.values)
+ax2.pcolormesh(lon_grid, lat_grid, masked, cmap='viridis', shading='auto', alpha=0.9, vmin=vmin, vmax=vmax)
+overlay_url = save_plot_to_blob_simple(fig2, 'wind_overlay.png', account_key)
+
+# Build GeoJSON
+geo_features = []
+lon_vals = data.lon.values
+lat_vals = data.lat.values
+vals = data.values
+for i in range(0, len(lat_vals), max(1, len(lat_vals)//25 or 1)):
+    for j in range(0, len(lon_vals), max(1, len(lon_vals)//25 or 1)):
+        v = float(vals[i, j])
+        if np.isfinite(v):
+            geo_features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [float(lon_vals[j]), float(lat_vals[i])]},
+                "properties": {"value": v, "variable": "wind_speed", "unit": "m/s"}
+            })
+geojson = {"type": "FeatureCollection", "features": geo_features}
+
+center_lon = float((lon_min + lon_max)/2)
+center_lat = float((lat_min + lat_max)/2)
+bounds = {"north": float(lat_max), "south": float(lat_min), "east": float(lon_max), "west": float(lon_min)}
+map_config = {"center": [center_lon, center_lat], "zoom": 6, "style": "satellite", "overlay_mode": True}
+
+plt.close(fig); plt.close(fig2); ds.close()
+result = {
+    "static_url": static_url,
+    "overlay_url": overlay_url,
+    "geojson": geojson,
+    "bounds": bounds,
+    "map_config": map_config,
+    "metadata": {
+        "variable": "Wind_Speed",
+        "date": "2023-03-12",
+        "year": 2023,
+        "month": 3,
+        "day": 12,
+        "region": "california",
+        "computation_type": "raw",
+        "color_scale": {"vmin": float(vmin), "vmax": float(vmax), "cmap": "viridis"}
+    }
+}
+```
 
 🚨 CRITICAL: SPI DATA IS MONTHLY ONLY - NO DAILY ANIMATIONS POSSIBLE
 
@@ -729,7 +843,7 @@ except Exception as e:
     url = save_plot_to_blob_simple(fig, 'california_may_2020_spi.png', account_key)
     plt.close(fig)
     ds.close()
-    esult = {
+    result = {
     "static_url": url,
     "overlay_url": url,
     "geojson": {"type": "FeatureCollection", "features": []},
