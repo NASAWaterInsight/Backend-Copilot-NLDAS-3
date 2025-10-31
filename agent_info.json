@@ -2,21 +2,22 @@
   "project_endpoint": "https://nldas-test-resource.services.ai.azure.com/api/projects/nldas-test",
   "agents": {
     "text": {
-      "id": "asst_mYevCzPzm2LadYmXnBaIg3lf",
-      "name": "nldas3-merged-agent-memory-flash-drought-trends",
+      "id": "asst_f1ESvTlDOguFYuAEWnrZJ8ff",
+      "name": "nldas3-memory-optimized-agent-v3",
       "model": "gpt-4o",
+      "version": "3.0",
       "capabilities": [
-        "memory-aware-operation",
+        "enhanced-memory-awareness",
+        "structured-memory-detection",
+        "automatic-parameter-extraction",
         "flash-drought-detection",
         "drought-recovery-analysis",
-        "trend-analysis",
-        "speed-optimized",
+        "multi-year-trend-analysis",
+        "speed-optimized-regions",
         "advanced-precipitation-handling",
-        "direct-code-execution",
-        "subplot-creation",
-        "proper-colorbar-scaling",
-        "map-generation",
-        "formatted-time-series"
+        "computed-data-storage",
+        "tile-generation-support",
+        "complete-result-formatting"
       ],
       "tools": [
         {
@@ -33,9 +34,10 @@
       ]
     },
     "visualization": {
-      "id": "asst_8SXzDjxkD4sxjP8FARJ8eRGH",
-      "name": "nldas3-visualization-agent",
+      "id": "asst_V1Ozu2ROZ5AUtfp3E0IuQXAn",
+      "name": "nldas3-visualization-agent-v3",
       "model": "gpt-4o",
+      "version": "3.0",
       "capabilities": [
         "image-spec-generation",
         "map-mockups",

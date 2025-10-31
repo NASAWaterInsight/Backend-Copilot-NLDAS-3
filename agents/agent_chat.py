@@ -1,4 +1,4 @@
-# agents/agent_chat.py - Merged version with timing, enhanced error handling, and analysis detection
+# agents/agent_chat.py - REVISED VERSION with proper memory integration
 from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
 import os
@@ -47,32 +47,181 @@ def _get_run(thread_id: str, run_id: str):
         return runs_ops.retrieve_run(thread_id=thread_id, run_id=run_id)
     raise AttributeError("RunsOperations has no get/get_run/retrieve_run")
 
+
+def build_structured_memory_context(recent_memories, relevant_memories, user_id: str) -> dict:
+    """
+    Build structured memory context that the agent can reliably parse
+    
+    Returns:
+        dict with 'text' (formatted string) and 'metadata' (structured data)
+    """
+    if not recent_memories and not relevant_memories:
+        logging.info(f"📭 No memory found for user {user_id[:8]}...")
+        return {
+            'text': '',
+            'metadata': {
+                'has_memory': False,
+                'last_variable': None,
+                'last_region': None,
+                'last_date': None
+            }
+        }
+    
+    logging.info(f"🧠 Building memory context for user {user_id[:8]}...")
+    
+    # Extract structured information
+    metadata = {
+        'has_memory': True,
+        'last_variable': None,
+        'last_region': None,
+        'last_date': None,
+        'memory_count': len(recent_memories) + len(relevant_memories)
+    }
+    
+    context_lines = ["=" * 60, "MEMORY CONTEXT (Your Previous Interactions):", "=" * 60]
+    
+    # Process recent memories
+    if recent_memories:
+        context_lines.append("\n📋 RECENT QUERIES:")
+        for idx, mem in enumerate(recent_memories[:3], 1):
+            if isinstance(mem, dict):
+                mem_text = mem.get('memory', str(mem))
+                mem_meta = mem.get('metadata', {})
+                
+                # Extract structured data from most recent memory
+                if idx == 1:
+                    if 'variable' in mem_meta:
+                        metadata['last_variable'] = mem_meta['variable']
+                    if 'region' in mem_meta:
+                        metadata['last_region'] = mem_meta['region']
+                    if 'date_str' in mem_meta:
+                        metadata['last_date'] = mem_meta['date_str']
+            else:
+                mem_text = str(mem)
+            
+            context_lines.append(f"  {idx}. {mem_text}")
+            
+            # Try to extract from text if metadata not available
+            if idx == 1 and not metadata['last_variable']:
+                import re
+                # Extract variable
+                if 'Rainf' in mem_text or 'precipitation' in mem_text.lower():
+                    metadata['last_variable'] = 'Rainf'
+                elif 'Tair' in mem_text or 'temperature' in mem_text.lower():
+                    metadata['last_variable'] = 'Tair'
+                elif 'SPI3' in mem_text or 'drought' in mem_text.lower():
+                    metadata['last_variable'] = 'SPI3'
+                
+                # Extract date (YYYY-MM-DD or YYYY-MM)
+                date_match = re.search(r'(\d{4}-\d{2}(?:-\d{2})?)', mem_text)
+                if date_match:
+                    metadata['last_date'] = date_match.group(1)
+                
+                # Extract region
+                regions = ['florida', 'california', 'maryland', 'texas', 'alaska', 'michigan']
+                for region in regions:
+                    if region in mem_text.lower():
+                        metadata['last_region'] = region
+                        break
+    
+    # Process relevant memories
+    if relevant_memories:
+        context_lines.append("\n🔍 RELEVANT CONTEXT:")
+        for idx, mem in enumerate(relevant_memories[:3], 1):
+            if isinstance(mem, dict):
+                mem_text = mem.get('memory', '')
+                if mem_text:
+                    context_lines.append(f"  {idx}. {mem_text}")
+            else:
+                context_lines.append(f"  {idx}. {str(mem)}")
+    
+    # Add explicit extraction section
+    context_lines.append("\n" + "=" * 60)
+    context_lines.append("EXTRACTED PARAMETERS FROM MEMORY:")
+    if metadata['last_variable']:
+        context_lines.append(f"  • Variable: {metadata['last_variable']}")
+    if metadata['last_region']:
+        context_lines.append(f"  • Region: {metadata['last_region']}")
+    if metadata['last_date']:
+        context_lines.append(f"  • Date: {metadata['last_date']}")
+    context_lines.append("=" * 60)
+    
+    memory_text = "\n".join(context_lines)
+    
+    logging.info(f"✅ Memory context built:")
+    logging.info(f"   - Variable: {metadata['last_variable']}")
+    logging.info(f"   - Region: {metadata['last_region']}")
+    logging.info(f"   - Date: {metadata['last_date']}")
+    
+    return {
+        'text': memory_text,
+        'metadata': metadata
+    }
+
+
+def construct_enhanced_query(user_query: str, memory_context: dict) -> str:
+    """
+    Construct query with explicit memory instructions for the agent
+    """
+    memory_text = memory_context.get('text', '')
+    metadata = memory_context.get('metadata', {})
+    
+    if not metadata.get('has_memory'):
+        # No memory - just return the query
+        return f"""
+NEW USER - NO PREVIOUS CONTEXT
+
+Current Query: {user_query}
+
+Instructions: This is a new user with no previous interactions. Process the query directly and ask for any missing information.
+"""
+    
+    # Has memory - provide explicit instructions
+    enhanced = f"""
+{memory_text}
+
+CURRENT QUERY: {user_query}
+
+MEMORY-AWARE INSTRUCTIONS:
+1. Check if current query references previous context:
+   - Words like "same", "that", "this", "again", "also" indicate memory usage
+   - Missing parameters (date/region) may be in memory above
+
+2. Apply memory when appropriate:
+   - "show the same for California" → Use previous variable + date, new region (California)
+   - "on March 15" → Use previous variable + region, new date (March 15)
+   - "show precipitation" → Use previous date + region if not specified, new variable
+
+3. Extract from MEMORY CONTEXT section if needed:
+   - Last variable used: {metadata.get('last_variable', 'NONE')}
+   - Last region analyzed: {metadata.get('last_region', 'NONE')}
+   - Last date queried: {metadata.get('last_date', 'NONE')}
+
+4. Decision process:
+   a) Extract explicit parameters from CURRENT QUERY
+   b) For missing parameters, check EXTRACTED PARAMETERS FROM MEMORY
+   c) If you have all needed info (variable, region, date), call execute_custom_code IMMEDIATELY
+   d) If still missing required info, ask user
+
+CRITICAL: Do NOT ask for information that is clearly available in memory context above.
+
+Now process the CURRENT QUERY using this memory context.
+"""
+    
+    return enhanced
+
+
 def determine_optimal_zoom_level(bounds: dict) -> int:
-    """
-    Area-based zoom selection for optimal tile count
-    
-    Strategy: Linear scaling with area
-    - Target: 2.5 tiles per 100 square degrees
-    - Min: 6 tiles (small regions)
-    - Max: 300 tiles (continental scale)
-    
-    Examples:
-    - Maryland (8 sq°): ~6 tiles at zoom 8
-    - Florida (56 sq°): ~8 tiles at zoom 7
-    - California (420 sq°): ~12 tiles at zoom 7
-    - Alaska (840 sq°): ~24 tiles at zoom 6
-    - CONUS (8000 sq°): ~200 tiles at zoom 5
-    """
+    """Area-based zoom selection for optimal tile count"""
     import mercantile
     
     lat_span = bounds["north"] - bounds["south"]
     lng_span = bounds["east"] - bounds["west"]
     area = lat_span * lng_span
     
-    logging.info(f"🗺️ Region bounds: N={bounds['north']:.2f}, S={bounds['south']:.2f}, E={bounds['east']:.2f}, W={bounds['west']:.2f}")
-    logging.info(f"📐 Region area: {area:.2f} sq degrees ({lat_span:.2f}° × {lng_span:.2f}°)")
+    logging.info(f"🗺️ Region area: {area:.2f} sq degrees ({lat_span:.2f}° × {lng_span:.2f}°)")
     
-    # HARDCODED: California override (if you still want this)
+    # California override
     if (31 <= bounds["south"] <= 33 and 
         41 <= bounds["north"] <= 43 and 
         -126 <= bounds["west"] <= -124 and 
@@ -80,18 +229,14 @@ def determine_optimal_zoom_level(bounds: dict) -> int:
         logging.info("🗺️ Detected California - using hardcoded zoom 7")
         return 7
     
-    # LINEAR SCALING: 2.5 tiles per 100 square degrees
+    # Linear scaling: 2.5 tiles per 100 square degrees
     TILES_PER_100_SQ_DEGREES = 2.5
     target_tiles = (area / 100.0) * TILES_PER_100_SQ_DEGREES
+    target_tiles = max(6, min(300, target_tiles))
     
-    # Apply constraints
-    MIN_TILES = 6
-    MAX_TILES = 300
-    target_tiles = max(MIN_TILES, min(MAX_TILES, target_tiles))
+    logging.info(f"🎯 Target tiles: {target_tiles:.0f}")
     
-    logging.info(f"🎯 Target tiles: {target_tiles:.0f} (formula: {area:.1f}/100 × {TILES_PER_100_SQ_DEGREES})")
-    
-    # Find zoom level that produces closest tile count
+    # Find zoom level with closest tile count
     best_zoom = 6
     best_diff = float('inf')
     best_count = 0
@@ -107,50 +252,27 @@ def determine_optimal_zoom_level(bounds: dict) -> int:
             
             diff = abs(total_tiles - target_tiles)
             
-            logging.info(f"  Zoom {zoom}: {tile_count_x} × {tile_count_y} = {total_tiles} tiles (diff from target: {diff:.0f})")
-            
             if diff < best_diff:
                 best_diff = diff
                 best_zoom = zoom
                 best_count = total_tiles
                 
         except Exception as e:
-            logging.warning(f"  Zoom {zoom}: Failed to calculate tiles - {e}")
+            logging.warning(f"  Zoom {zoom}: Failed - {e}")
             continue
     
-    logging.info(f"✅ Selected zoom {best_zoom}: {best_count} tiles (target was {target_tiles:.0f})")
-    logging.info(f"📊 Coverage: Each tile ≈ {area/best_count:.1f} sq degrees")
-    
+    logging.info(f"✅ Selected zoom {best_zoom}: {best_count} tiles")
     return best_zoom
 
 
-
-
-
 def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) -> dict:
-    """
-    Create tile configuration from either raw data or pre-computed data
-    
-    Priority order:
-    1. Pre-computed data (for differences, averages, custom calculations)
-    2. Raw data (for single date/month queries)
-    
-    Args:
-        map_data: Map result with bounds and metadata
-        user_query: Original user query (for logging only)
-        date_info: Pre-extracted date info from extract_analysis_info()
-    
-    Returns:
-        dict: Tile configuration with tile_url, zoom, bounds, etc.
-              OR dict with "error" key if parameters cannot be determined
-    """
+    """Create tile configuration from either raw data or pre-computed data"""
     import re
     import mercantile
     
-    logging.info(f"🔍 create_tile_config called")
-    logging.info(f"  📝 Query: {user_query}")
+    logging.info(f"🔍 create_tile_config called for: {user_query}")
     
-    # ✅ CRITICAL: ONLY use metadata - no fallbacks, no parsing
+    # CRITICAL: ONLY use metadata
     if not date_info or date_info.get("error"):
         logging.error(f"❌ No date_info provided: {date_info}")
         return {"error": "Missing metadata from map generation"}
@@ -161,11 +283,11 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
     
     if not variable or not date_str:
         logging.error(f"❌ Incomplete metadata: variable={variable}, date={date_str}")
-        return {"error": f"Incomplete metadata: variable={variable}, date={date_str}"}
+        return {"error": f"Incomplete metadata"}
     
     logging.info(f"✅ Using metadata: variable={variable}, date={date_str}, region={region}")
     
-    # Get bounds from map data (these are the ACTUAL bounds used)
+    # Get bounds
     bounds = map_data.get("bounds", {})
     if not bounds or not all(k in bounds for k in ["north", "south", "east", "west"]):
         logging.error(f"❌ Invalid bounds: {bounds}")
@@ -176,48 +298,31 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
     east = float(bounds["east"])
     west = float(bounds["west"])
     
-    logging.info(f"🗺️  Using EXACT bounds from static map:")
-    logging.info(f"   N={north:.4f}, S={south:.4f}, E={east:.4f}, W={west:.4f}")
+    logging.info(f"🗺️ Bounds: N={north:.4f}, S={south:.4f}, E={east:.4f}, W={west:.4f}")
     
-    # ✅ NEW: Check if we have pre-computed data
+    # Check for pre-computed data
     metadata = map_data.get("metadata", {})
     computation_type = metadata.get("computation_type", "raw")
     computed_data_url = metadata.get("computed_data_url")
     computed_data_hash = metadata.get("computed_data_hash")
     
-    logging.info(f"📊 Computation type: {computation_type}")
-    
     if computed_data_url and computed_data_hash and computation_type != "raw":
-        # ✅ USE PRE-COMPUTED DATA for tiles
-        logging.info(f"✅ Using pre-computed data: {computed_data_url}")
-        logging.info(f"   Hash: {computed_data_hash}")
+        # Use pre-computed data
+        logging.info(f"✅ Using pre-computed data: {computation_type}")
         
-        # Get color scale from metadata (what was actually used in static map)
         color_scale = metadata.get("color_scale", {})
         vmin = color_scale.get("vmin")
         vmax = color_scale.get("vmax")
         cmap = color_scale.get("cmap", "viridis")
         
         if vmin is None or vmax is None:
-            logging.error(f"❌ Missing color scale in metadata")
+            logging.error(f"❌ Missing color scale")
             return {"error": "Missing color scale for computed data"}
         
-        logging.info(f"🎨 Using color scale from metadata: {vmin:.2f} to {vmax:.2f}, cmap={cmap}")
-        
-        # Calculate zoom
         zoom = determine_optimal_zoom_level(bounds)
-        
-        # Generate tile grid
         nw_tile = mercantile.tile(west, north, zoom)
         se_tile = mercantile.tile(east, south, zoom)
         
-        tile_count_x = se_tile.x - nw_tile.x + 1
-        tile_count_y = se_tile.y - nw_tile.y + 1
-        total_tiles = tile_count_x * tile_count_y
-        
-        logging.info(f"🎯 Tile grid: {tile_count_x} × {tile_count_y} = {total_tiles} tiles at zoom {zoom}")
-        
-        # Generate tile list with computed data endpoint
         tile_list = []
         for x in range(nw_tile.x, se_tile.x + 1):
             for y in range(nw_tile.y, se_tile.y + 1):
@@ -235,44 +340,27 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
                     }
                 })
         
-        logging.info(f"✅ Generated {len(tile_list)} tiles from pre-computed data")
-        
         return {
             "tile_url": f"http://localhost:8000/api/tiles/computed/{computed_data_hash}/{{z}}/{{x}}/{{y}}.png?vmin={vmin}&vmax={vmax}&cmap={cmap}",
             "variable": variable,
             "date": date_str,
             "computation_type": computation_type,
-            "computation_description": metadata.get("computation_description"),
             "zoom": zoom,
-            "min_zoom": max(3, zoom - 1),
-            "max_zoom": min(10, zoom + 2),
-            "tile_size": 256,
             "tile_list": tile_list,
             "region_bounds": {"north": north, "south": south, "east": east, "west": west},
-            "tile_count": len(tile_list),
-            "color_scale": {
-                "vmin": float(vmin),
-                "vmax": float(vmax),
-                "cmap": cmap,
-                "variable": variable
-            },
-            "uses_precomputed_data": True,
-            "computed_data_hash": computed_data_hash
+            "uses_precomputed_data": True
         }
     
     else:
-        # ✅ RAW DATA - existing logic for single date loading
-        logging.info(f"✅ Using raw data tiles (single date/month)")
+        # Raw data tiles
+        logging.info(f"✅ Using raw data tiles")
         
-        # Parse date to get year, month, day
         date_parts = date_str.split('-')
         year = int(date_parts[0])
         month = int(date_parts[1])
         day = int(date_parts[2]) if len(date_parts) > 2 else None
         
-        logging.info(f"📅 Loading data for: {year}-{month:02d}" + (f"-{day:02d}" if day else ""))
-        
-        # Calculate actual data range for this region
+        # Calculate data range
         try:
             from .weather_tool import (
                 load_specific_date_kerchunk,
@@ -299,7 +387,6 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
                     lon=builtins.slice(west, east)
                 )
                 
-                # Apply EXACT same processing as static map
                 if variable == 'Tair':
                     data = data.mean(dim='time') - 273.15
                 elif variable == 'Rainf':
@@ -310,18 +397,15 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
                 if hasattr(data, 'squeeze'):
                     data = data.squeeze()
                 
-                # Calculate percentile-based scale (same as static map)
                 valid_data = data.values[np.isfinite(data.values)]
                 if len(valid_data) > 0:
                     region_vmin, region_vmax = np.percentile(valid_data, [2, 98])
                     
-                    # Prevent collapsed range
                     if abs(region_vmax - region_vmin) < 0.1:
                         center = (region_vmin + region_vmax) / 2
                         region_vmin = center - 1.0
                         region_vmax = center + 1.0
                 else:
-                    # Fallback defaults
                     if variable == 'Tair':
                         region_vmin, region_vmax = -10, 30
                     elif variable == 'Rainf':
@@ -330,11 +414,10 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
                         region_vmin, region_vmax = 0, 100
             
             ds.close()
-            logging.info(f"🎨 Calculated scale from actual data: {region_vmin:.2f} to {region_vmax:.2f}")
+            logging.info(f"🎨 Calculated scale: {region_vmin:.2f} to {region_vmax:.2f}")
             
-        except Exception as scale_error:
-            logging.error(f"❌ Failed to calculate region scale: {scale_error}")
-            # Use defaults based on variable
+        except Exception as e:
+            logging.error(f"❌ Failed to calculate scale: {e}")
             if variable == 'SPI3':
                 region_vmin, region_vmax = -2.5, 2.5
             elif variable == 'Tair':
@@ -344,25 +427,14 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
             else:
                 region_vmin, region_vmax = 0, 100
         
-        # Calculate zoom
         zoom = determine_optimal_zoom_level(bounds)
-        
-        # Generate tile grid
         nw_tile = mercantile.tile(west, north, zoom)
         se_tile = mercantile.tile(east, south, zoom)
         
-        tile_count_x = se_tile.x - nw_tile.x + 1
-        tile_count_y = se_tile.y - nw_tile.y + 1
-        total_tiles = tile_count_x * tile_count_y
-        
-        logging.info(f"🎯 Tile grid: {tile_count_x} × {tile_count_y} = {total_tiles} tiles at zoom {zoom}")
-        
-        # Generate tile list
         tile_list = []
         for x in range(nw_tile.x, se_tile.x + 1):
             for y in range(nw_tile.y, se_tile.y + 1):
                 tile_bounds = mercantile.bounds(mercantile.Tile(x, y, zoom))
-                
                 tile_list.append({
                     "z": zoom,
                     "x": x,
@@ -376,78 +448,47 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
                     }
                 })
         
-        logging.info(f"✅ Generated {len(tile_list)} tiles")
-        
         return {
             "tile_url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png?vmin={region_vmin}&vmax={region_vmax}",
             "variable": variable,
             "date": date_str,
             "zoom": zoom,
-            "min_zoom": max(3, zoom - 1),
-            "max_zoom": min(10, zoom + 2),
-            "tile_size": 256,
             "tile_list": tile_list,
             "region_bounds": {"north": north, "south": south, "east": east, "west": west},
-            "tile_count": len(tile_list),
-            "color_scale": {
-                "vmin": float(region_vmin),
-                "vmax": float(region_vmax),
-                "variable": variable
-            },
             "uses_precomputed_data": False
         }
 
 
-def wrap_with_geo_overlay(static_url: str, original_query: str) -> dict:
-    """
-    Produce a unified response structure containing:
-    - original static map URL (static_url)
-    - overlay_url (same as static for now; future: transparent variant)
-    - minimal GeoJSON sampling placeholder (empty FeatureCollection)
-    - default map_config (frontend can refine)
-    """
-    logging.info("🌐 Adding unified overlay + geojson wrapper to static visualization")
-    geojson = {
-        "type": "FeatureCollection",
-        "features": []
-    }
-    map_config = {
-        "style": "satellite",
-        "overlay_mode": True,
-        "center": [ -98.0, 39.0 ],  # Fallback CONUS center
-        "zoom": 5
-    }
-    return {
-        "static_url": static_url,
-        "overlay_url": None,  # distinguish that we lack a transparent overlay
-        "geojson": geojson,
-        "bounds": None,
-        "map_config": map_config,
-        "original_query": original_query
-    }
-
 def normalize_map_result_dict(raw: dict, original_query: str) -> dict:
-    """Guarantee required keys for map dict returned by generated code."""
+    """Guarantee required keys for map dict"""
     static_url = raw.get("static_url")
     overlay_url = raw.get("overlay_url") or raw.get("transparent_url")
-    # fallback: if only one provided treat as both
+    
     if overlay_url is None and static_url:
         overlay_url = static_url
     if static_url is None and overlay_url:
         static_url = overlay_url
+    
     geojson = raw.get("geojson") or {"type":"FeatureCollection","features":[]}
     bounds = raw.get("bounds") or {}
+    
+    center = [
+        float((bounds.get("east", -98) + bounds.get("west", -98)) / 2),
+        float((bounds.get("north", 39) + bounds.get("south", 39)) / 2)
+    ]
+    
     map_config = raw.get("map_config") or {
-        "center": bounds_center(bounds),
+        "center": center,
         "zoom": 6,
         "style": "satellite",
         "overlay_mode": True
     }
-    # Fill center if missing
+    
     if "center" not in map_config or not map_config["center"]:
-        map_config["center"] = bounds_center(bounds)
+        map_config["center"] = center
     if "overlay_mode" not in map_config:
         map_config["overlay_mode"] = True
+    
     return {
         "static_url": static_url,
         "overlay_url": overlay_url,
@@ -457,57 +498,44 @@ def normalize_map_result_dict(raw: dict, original_query: str) -> dict:
         "original_query": original_query
     }
 
+
 def build_temperature_data(geojson: dict, target_max_points: int = 2500) -> list:
     """Build temperature_data array from geojson features"""
     results = []
     if not geojson or geojson.get("type") != "FeatureCollection":
         return results
+    
     features = geojson.get("features", [])
     total = len(features)
     if total == 0:
         return results
-    # Adaptive stride
-    if total > target_max_points:
-        stride = max(1, int(total / target_max_points))
-    else:
-        stride = 1
-    min_val = None
-    max_val = None
-    min_feat = None
-    max_feat = None
+    
+    stride = max(1, int(total / target_max_points)) if total > target_max_points else 1
+    
     for idx, f in enumerate(features):
         if idx % stride != 0:
-            # Still track min/max
-            props = f.get("properties", {}) or {}
-            v = props.get("value") or props.get("spi") or props.get("temperature")
-            try:
-                fv = float(v)
-                if (min_val is None) or (fv < min_val):
-                    min_val, min_feat = fv, f
-                if (max_val is None) or (fv > max_val):
-                    max_val, max_feat = fv, f
-            except:
-                pass
             continue
+        
         geom = f.get("geometry", {})
         if geom.get("type") != "Point":
             continue
+        
         coords = geom.get("coordinates")
         if not coords or len(coords) < 2:
             continue
+        
         lon, lat = float(coords[0]), float(coords[1])
         props = f.get("properties", {}) or {}
-        val = props.get("value")
-        if val is None:
-            val = props.get("spi")
-        if val is None:
-            val = props.get("temperature")
+        
+        val = props.get("value") or props.get("spi") or props.get("temperature")
         if val is None:
             continue
+        
         try:
             val = float(val)
         except:
             continue
+        
         results.append({
             "latitude": lat,
             "longitude": lon,
@@ -515,60 +543,23 @@ def build_temperature_data(geojson: dict, target_max_points: int = 2500) -> list
             "originalValue": val,
             "location": f"{lat:.2f}, {lon:.2f}"
         })
-    # Ensure extremes included
-    def add_extreme(feat):
-        if not feat:
-            return
-        geom = feat.get("geometry", {})
-        if geom.get("type") != "Point":
-            return
-        coords = geom.get("coordinates")
-        if not coords or len(coords) < 2:
-            return
-        lon, lat = float(coords[0]), float(coords[1])
-        props = feat.get("properties", {}) or {}
-        v = props.get("value") or props.get("spi") or props.get("temperature")
-        try:
-            fv = float(v)
-        except:
-            return
-        key = (round(lat, 6), round(lon, 6))
-        if all((round(r["latitude"],6), round(r["longitude"],6)) != key for r in results):
-            results.append({
-                "latitude": lat,
-                "longitude": lon,
-                "value": fv,
-                "originalValue": fv,
-                "location": f"{lat:.2f}, {lon:.2f}"
-            })
-    add_extreme(min_feat)
-    add_extreme(max_feat)
+    
     return results
 
-def bounds_center(bounds: dict):
-    """Calculate center point from bounds"""
-    try:
-        return [
-            float((bounds.get("east")+bounds.get("west"))/2),
-            float((bounds.get("north")+bounds.get("south"))/2)
-        ]
-    except Exception:
-        return [-98.0, 39.0]
 
 def should_use_tiles(user_query: str, map_data: dict) -> bool:
-    """
-    ALWAYS use tiles - unified approach for all map queries
-    """
+    """Always use tiles - unified approach"""
     bounds = map_data.get("bounds", {})
     if not bounds:
-        logging.warning("❌ No bounds in map_data - cannot use tiles")
+        logging.warning("❌ No bounds - cannot use tiles")
         return False
     
-    logging.info("✅ Using tiles for ALL map queries (unified approach)")
+    logging.info("✅ Using tiles (unified approach)")
     return True
 
+
 def extract_agent_text_response(thread_id: str) -> str:
-    """Extract the most recent assistant message from the thread"""
+    """Extract the most recent assistant message"""
     try:
         messages = project_client.agents.messages.list(thread_id=thread_id)
         messages_list = list(messages)
@@ -584,31 +575,27 @@ def extract_agent_text_response(thread_id: str) -> str:
                     else:
                         return str(content_block)
         
-        return "Hello! I'm the NLDAS-3 Weather Assistant. I can help you with weather data queries, maps, and analysis. What would you like to know?"
+        return "Hello! I'm the NLDAS-3 Weather Assistant. How can I help you today?"
         
     except Exception as e:
-        logging.error(f"❌ Error extracting text response: {e}", exc_info=True)
-        return "Hello! I'm here to help with weather data. What would you like to explore?"
+        logging.error(f"❌ Error extracting text: {e}", exc_info=True)
+        return "Hello! I'm here to help with weather data."
 
-def extract_analysis_info(query: str, result: dict, memory_context: str = "") -> dict:
+
+def extract_analysis_info(query: str, result: dict, memory_context: dict = None) -> dict:
     """
-    Extract variable, region, and date from result metadata FIRST, then query, then memory
+    Extract variable, region, and date from result metadata, query, or memory
     
-    Priority order:
-    1. Result metadata (what was actually used to create the map)
-    2. Query parsing (explicit request)
-    3. Memory context (for "same" queries)
-    
-    Args:
-        query: Current user query
-        result: Result dict from code execution (should contain metadata)
-        memory_context: Recent memory context string
+    Priority:
+    1. Result metadata (most reliable)
+    2. Query parsing
+    3. Memory context
     """
     import re
     
     query_lower = query.lower()
     
-    # ✅ PRIORITY 1: Extract from result metadata (most reliable - what was actually used)
+    # PRIORITY 1: Result metadata
     variable = None
     date_str = None
     region = "unknown"
@@ -620,86 +607,72 @@ def extract_analysis_info(query: str, result: dict, memory_context: str = "") ->
         region = metadata.get("region", "unknown")
         
         if variable:
-            logging.info(f"✅ Using metadata from result: variable={variable}, date={date_str}, region={region}")
+            logging.info(f"✅ Metadata: variable={variable}, date={date_str}, region={region}")
             return {
                 "variable": variable,
                 "region": region,
                 "date_str": date_str
             }
     
-    # Fallback: Try to extract from color_scale if metadata not present
+    # Fallback: color_scale
     if not variable and result:
         color_scale = result.get("color_scale", {})
         if color_scale and "variable" in color_scale:
             variable = color_scale["variable"]
-            logging.info(f"📊 Extracted variable from color_scale: {variable}")
+            logging.info(f"📊 From color_scale: {variable}")
     
-    # ✅ PRIORITY 2: Check memory for "same" queries
-    if not variable and any(word in query_lower for word in ['same', 'similar', 'that', 'this']):
-        if 'SPI3' in memory_context or 'drought' in memory_context.lower():
-            variable = "SPI3"
-            logging.info("📝 Extracted variable from memory: SPI3 (drought)")
-        elif 'Rainf' in memory_context or 'precipitation' in memory_context.lower():
-            variable = "Rainf"
-            logging.info("📝 Extracted variable from memory: Rainf (precipitation)")
-        elif 'Tair' in memory_context or 'temperature' in memory_context.lower():
-            variable = "Tair"
-            logging.info("📝 Extracted variable from memory: Tair (temperature)")
+    # PRIORITY 2: Check memory for "same" queries
+    if not variable and memory_context and any(word in query_lower for word in ['same', 'similar', 'that', 'this']):
+        mem_metadata = memory_context.get('metadata', {})
+        if mem_metadata.get('last_variable'):
+            variable = mem_metadata['last_variable']
+            logging.info(f"📝 From memory: {variable}")
     
-    # ✅ PRIORITY 3: Parse from current query
+    # PRIORITY 3: Parse query
     if not variable:
         if any(word in query_lower for word in ['drought', 'spi']):
             variable = "SPI3"
-            logging.info("📝 Extracted variable from query: SPI3")
         elif any(word in query_lower for word in ['precipitation', 'rain', 'rainfall', 'precip']):
             variable = "Rainf"
-            logging.info("📝 Extracted variable from query: Rainf (precipitation)")
         elif any(word in query_lower for word in ['temperature', 'temp']):
             variable = "Tair"
-            logging.info("📝 Extracted variable from query: Tair")
     
-    # ✅ VALIDATE: If variable is still None, return error
     if not variable:
-        logging.error(f"❌ Could not detect variable type from query: {query}")
-        return {
-            "error": "Could not determine which weather variable you want. Please specify: temperature, precipitation, or drought/SPI"
-        }
+        logging.error(f"❌ Could not detect variable: {query}")
+        return {"error": "Could not determine weather variable"}
     
-    # ✅ Extract region (if not already from metadata)
+    # Extract region
     if region == "unknown":
-        regions = {
-            'michigan': 'michigan',
-            'florida': 'florida',
-            'california': 'california',
-            'maryland': 'maryland',
-            'texas': 'texas',
-            'alaska': 'alaska',
-            'hope': 'alaska',  # Hope is a city in Alaska
-        }
-        for key, value in regions.items():
-            if key in query_lower:
-                region = value
-                break
+        if memory_context:
+            mem_metadata = memory_context.get('metadata', {})
+            if mem_metadata.get('last_region'):
+                region = mem_metadata['last_region']
+        
+        if region == "unknown":
+            regions = {
+                'michigan': 'michigan', 'florida': 'florida', 'california': 'california',
+                'maryland': 'maryland', 'texas': 'texas', 'alaska': 'alaska',
+                'hope': 'alaska', 'southeast': 'southeast'
+            }
+            for key, value in regions.items():
+                if key in query_lower:
+                    region = value
+                    break
     
-    # ✅ Extract date (if not already from metadata)
+    # Extract date
     if not date_str:
-        year = None
-        month = None
-        day = None
+        if memory_context and any(word in query_lower for word in ['same', 'similar', 'that', 'this']):
+            mem_metadata = memory_context.get('metadata', {})
+            if mem_metadata.get('last_date'):
+                date_str = mem_metadata['last_date']
+                logging.info(f"📅 Date from memory: {date_str}")
         
-        if any(word in query_lower for word in ['same', 'similar', 'that', 'this']):
-            # Extract date from memory (format: "2023-06-15" or "2023-06")
-            memory_date_match = re.search(r'on (\d{4}-\d{2}(?:-\d{2})?)', memory_context)
-            if memory_date_match:
-                date_str = memory_date_match.group(1)
-                logging.info(f"📅 Extracted date from memory: {date_str}")
-        
-        # If not found in memory, extract from query
         if not date_str:
             year_match = re.search(r'(20\d{2})', query)
             year = int(year_match.group(1)) if year_match else 2023
             
-            month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
+            month_names = ['january','february','march','april','may','june',
+                          'july','august','september','october','november','december']
             month_match = re.search(r'(' + '|'.join(month_names) + ')', query_lower)
             month = month_names.index(month_match.group(1)) + 1 if month_match else 6
             
@@ -707,13 +680,12 @@ def extract_analysis_info(query: str, result: dict, memory_context: str = "") ->
                 day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', query)
                 day = int(day_match.group(1)) if day_match else 15
             
-            # Build date string
             if variable == "SPI3":
                 date_str = f"{year}-{month:02d}"
             else:
                 date_str = f"{year}-{month:02d}-{day:02d}"
     
-    logging.info(f"📊 Final extracted info: variable={variable}, region={region}, date={date_str}")
+    logging.info(f"📊 Final: variable={variable}, region={region}, date={date_str}")
     
     return {
         "variable": variable,
@@ -721,9 +693,11 @@ def extract_analysis_info(query: str, result: dict, memory_context: str = "") ->
         "date_str": date_str
     }
 
+
 def handle_chat_request(data):
-    """Handle chat requests with memory, timing, enhanced error handling, and analysis detection"""
-    # ===== PERFORMANCE TIMING: Start =====
+    """
+    Handle chat requests with PROPER memory integration
+    """
     start_total = time.time()
     times = {}
     
@@ -731,60 +705,73 @@ def handle_chat_request(data):
         # ===== VALIDATION =====
         t1 = time.time()
         user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
-        logging.info(f"Processing chat request: {user_query}")
+        logging.info(f"\n{'='*80}")
+        logging.info(f"🆕 NEW REQUEST: {user_query}")
+        logging.info(f"{'='*80}")
         
-        # Get user_id from request data
+        # Get user_id
         user_id = data.get("user_id", f"anonymous_{hash(user_query) % 10000}")
         logging.info(f"👤 User ID: {user_id}")
-
+        
+        # ⚠️ CRITICAL WARNING for anonymous users
+        if user_id.startswith("anonymous_"):
+            logging.warning(f"⚠️ ANONYMOUS USER: {user_id}")
+            logging.warning("   Memory will NOT persist across sessions!")
+            logging.warning("   Pass a real user_id in the request to enable memory")
+        
+        times['validation'] = time.time() - t1
+        
         # ===== MEMORY RETRIEVAL =====
         t2 = time.time()
-
-        # ✅ DEBUG: Check if this is a truly new user
+        
+        # Check total memories for this user
         all_user_memories = memory_manager.get_all(user_id)
         memory_count = len(all_user_memories) if isinstance(all_user_memories, list) else len(all_user_memories.get('results', []))
-        logging.info(f"📊 User {user_id[:8]}... has {memory_count} total memories in database")
-
-        # Retrieve memory context BEFORE sending to agent
+        logging.info(f"📊 User {user_id[:8]}... has {memory_count} total memories")
+        
+        # Retrieve recent and relevant memories
         recent_memories = memory_manager.recent_context(user_id, limit=3)
         relevant_memories = memory_manager.search(user_query, user_id, limit=3)
-
-        logging.info(f"📚 Recent memories retrieved: {len(recent_memories)}")
-        logging.info(f"🔍 Relevant memories retrieved: {len(relevant_memories)}")
-
-        # ✅ Validate memory isolation
-        if recent_memories or relevant_memories:
-            # Check that all retrieved memories actually belong to this user
-            for mem in relevant_memories:
-                if isinstance(mem, dict):
-                    mem_user = mem.get('user_id', '')
-                    if mem_user and mem_user != user_id:
-                        logging.error(f"🚨 MEMORY LEAK: Retrieved memory from {mem_user[:8]}... for user {user_id[:8]}...")
         
-        # Build enhanced query with memory context
-        memory_context_str = ""
-        if recent_memories or relevant_memories:
-            memory_context_str = "\n\n🧠 Recent context from your previous queries:\n"
-            
-            if recent_memories:
-                memory_context_str += "Recent conversations:\n"
-                for mem in recent_memories[:2]:
-                    memory_context_str += f"- {mem}\n"
-            
-            if relevant_memories:
-                memory_context_str += "\nRelevant previous analyses:\n"
-                for mem in relevant_memories[:2]:
-                    mem_text = mem.get("memory", "")
-                    if mem_text:
-                        memory_context_str += f"- {mem_text}\n"
-
-        enhanced_query = user_query + memory_context_str
+        logging.info(f"📚 Recent memories: {len(recent_memories)}")
+        logging.info(f"🔍 Relevant memories: {len(relevant_memories)}")
+        
+        # Build structured memory context
+        memory_context = build_structured_memory_context(recent_memories, relevant_memories, user_id)
+        
+        # Construct enhanced query with explicit memory instructions
+        enhanced_query = construct_enhanced_query(user_query, memory_context)
+        
+        # Log what we're sending to the agent
+        logging.info(f"\n{'='*80}")
+        logging.info(f"📤 SENDING TO AGENT:")
+        logging.info(f"{'='*80}")
+        logging.info(f"Has memory: {memory_context['metadata']['has_memory']}")
+        if memory_context['metadata']['has_memory']:
+            logging.info(f"Last variable: {memory_context['metadata']['last_variable']}")
+            logging.info(f"Last region: {memory_context['metadata']['last_region']}")
+            logging.info(f"Last date: {memory_context['metadata']['last_date']}")
+        logging.info(f"\nQuery preview:\n{enhanced_query[:500]}...")
+        logging.info(f"{'='*80}\n")
+        
         times['memory_retrieval'] = time.time() - t2
-            
-        # ===== THREAD CREATION =====
+        
+        # ===== THREAD MANAGEMENT =====
         t3 = time.time()
-        thread = project_client.agents.threads.create()
-        logging.info(f"Created thread: {thread.id}")
+        thread_id = data.get("thread_id")
+        
+        if thread_id:
+            try:
+                thread = project_client.agents.threads.retrieve(thread_id=thread_id)
+                logging.info(f"♻️ Reusing thread: {thread.id}")
+            except Exception as e:
+                logging.warning(f"⚠️ Thread {thread_id} invalid: {e}")
+                thread = project_client.agents.threads.create()
+                logging.info(f"🆕 Created new thread: {thread.id}")
+        else:
+            thread = project_client.agents.threads.create()
+            logging.info(f"🆕 Created thread: {thread.id}")
+        
         times['thread_creation'] = time.time() - t3
         
         # ===== MESSAGE CREATION =====
@@ -794,7 +781,7 @@ def handle_chat_request(data):
             role="user",
             content=enhanced_query
         )
-        logging.info(f"Created message: {message.id}")
+        logging.info(f"✉️ Created message: {message.id}")
         times['message_creation'] = time.time() - t4
         
         # ===== RUN CREATION =====
@@ -803,30 +790,22 @@ def handle_chat_request(data):
             thread_id=thread.id,
             agent_id=text_agent_id
         )
-        logging.info(f"Started run: {run.id}")
+        logging.info(f"🚀 Started run: {run.id}")
         times['run_creation'] = time.time() - t5
         
-        # ===== ANALYSIS QUERY DETECTION =====
-        t6 = time.time()
+        # ===== ANALYSIS DETECTION =====
         analysis_keywords = [
-            'most significant', 'most extreme', 'hottest', 'coldest', 
-            'warmest', 'wettest', 'driest', 'highest', 'lowest', 
+            'most significant', 'most extreme', 'hottest', 'coldest',
+            'warmest', 'wettest', 'driest', 'highest', 'lowest',
             'top', 'worst', 'best', 'find', 'where are'
         ]
         is_analysis_query = any(phrase in user_query.lower() for phrase in analysis_keywords)
-        times['analysis_detection'] = time.time() - t6
         
         if is_analysis_query:
-            # Direct analysis timing
-            t7 = time.time()
-            logging.info(f"🔍 Detected analysis query - using direct analysis function")
+            logging.info(f"🔍 Detected analysis query - using direct function")
             try:
                 from .dynamic_code_generator import analyze_extreme_regions
                 analysis_result = analyze_extreme_regions(user_query)
-                times['direct_analysis'] = time.time() - t7
-                times['total'] = time.time() - start_total
-                
-                logging.info(f"⏱️  ANALYSIS TIMING: {json.dumps(times, indent=2)}")
                 
                 if analysis_result.get("status") == "success":
                     result_value = analysis_result.get("result")
@@ -838,7 +817,8 @@ def handle_chat_request(data):
                         {"type": "analysis", "query": user_query}
                     )
                     
-                    # Return the complete structured analysis response
+                    times['total'] = time.time() - start_total
+                    
                     return make_json_serializable({
                         "status": "success",
                         "content": f"Analysis completed: Found {len(result_value.get('regions', []))} extreme regions",
@@ -847,30 +827,16 @@ def handle_chat_request(data):
                         "regions": result_value.get("regions", []),
                         "geojson": result_value.get("geojson", {}),
                         "bounds": result_value.get("bounds", {}),
-                        "map_config": result_value.get("map_config", {}),
-                        "variable": result_value.get("variable"),
-                        "analysis_type": result_value.get("analysis_type"),
                         "temperature_data": build_temperature_data(result_value.get("geojson", {})),
                         "agent_id": text_agent_id,
                         "thread_id": thread.id,
                         "user_id": user_id,
                         "timing_breakdown": times
                     })
-                else:
-                    return make_json_serializable({
-                        "status": "error",
-                        "content": f"Analysis failed: {analysis_result.get('error', 'Unknown error')}",
-                        "type": "analysis_error",
-                        "user_id": user_id,
-                        "timing_breakdown": times
-                    })
-                    
-            except Exception as analysis_error:
-                times['direct_analysis_failed'] = time.time() - t7
-                logging.error(f"❌ Direct analysis failed: {analysis_error}")
-                logging.info("🔄 Falling back to agent-based analysis")
+            except Exception as e:
+                logging.error(f"❌ Direct analysis failed: {e}")
         
-        # ===== ENHANCED EXECUTION LOOP =====
+        # ===== EXECUTION LOOP =====
         t8 = time.time()
         max_iterations = 20
         iteration = 0
@@ -878,86 +844,69 @@ def handle_chat_request(data):
         custom_code_executed = False
         
         start_time = time.time()
-        max_total_time = 120  # 2 minutes total
-        max_in_progress_time = 8  # Max time to stay in "in_progress"
+        max_total_time = 120
+        max_in_progress_time = 8
         last_status_change = start_time
-        in_progress_count = 0
         
         while iteration < max_iterations:
             iteration += 1
             current_time = time.time()
             elapsed_time = current_time - start_time
             
-            logging.info(f"🔄 Run status: {run.status} (iteration {iteration}/{max_iterations}, elapsed: {elapsed_time:.1f}s)")
+            logging.info(f"🔄 Status: {run.status} (iter {iteration}/{max_iterations}, {elapsed_time:.1f}s)")
             
-            # Overall timeout check
             if elapsed_time > max_total_time:
-                logging.warning(f"⏰ TIMEOUT: Exceeded {max_total_time}s")
+                logging.warning(f"⏰ TIMEOUT: {max_total_time}s exceeded")
                 break
             
-            # ===== ENHANCED ERROR HANDLING: Stuck Detection =====
+            # Stuck detection
             if run.status == "in_progress":
-                in_progress_count += 1
                 time_in_progress = current_time - last_status_change
                 
-                # If stuck in "in_progress" too long, try to force action
                 if time_in_progress > max_in_progress_time:
-                    logging.warning(f"⚠️ Stuck in 'in_progress' for {time_in_progress:.1f}s. Attempting to force completion...")
-                    
-                    # Try to cancel and restart the run
+                    logging.warning(f"⚠️ Stuck in 'in_progress' for {time_in_progress:.1f}s")
                     try:
                         project_client.agents.runs.cancel(thread_id=thread.id, run_id=run.id)
                         time.sleep(1)
                         
-                        # Create a new, more direct message
                         direct_message = project_client.agents.messages.create(
                             thread_id=thread.id,
                             role="user",
-                            content="EXECUTE FUNCTION NOW! Call execute_custom_code immediately."
+                            content="EXECUTE NOW! Call execute_custom_code immediately."
                         )
                         
-                        # Start a new run
                         run = project_client.agents.runs.create(
                             thread_id=thread.id,
                             agent_id=text_agent_id
                         )
                         
                         last_status_change = time.time()
-                        in_progress_count = 0
-                        logging.info("🔄 Restarted run after being stuck")
-                        
-                    except Exception as restart_error:
-                        logging.error(f"❌ Failed to restart run: {restart_error}")
+                        logging.info("🔄 Restarted run")
+                    except Exception as e:
+                        logging.error(f"❌ Failed to restart: {e}")
                         break
-            else:
-                # Status changed, reset counters
-                if run.status != getattr(handle_chat_request, '_last_status', None):
-                    last_status_change = current_time
-                    in_progress_count = 0
-                    handle_chat_request._last_status = run.status
             
-            # ===== CASE 1: COMPLETED =====
+            # ===== COMPLETED =====
             if run.status == "completed":
                 logging.info("✅ Run completed")
                 
                 if not custom_code_executed:
-                    # Text-only response
                     text_response = extract_agent_text_response(thread.id)
                     
-                    # Store text response in memory
+                    # Store text response
                     memory_manager.add(
                         f"Query: {user_query}\nResponse: {text_response}",
                         user_id,
                         {"type": "conversation", "query": user_query}
                     )
-                    logging.info(f"💾 Stored conversation in memory for user {user_id}")
+                    logging.info(f"💾 Stored conversation for {user_id}")
                     
                     times['execution_loop'] = time.time() - t8
                     times['total'] = time.time() - start_total
                     
-                    logging.info(f"⏱️  TIMING BREAKDOWN: {json.dumps(times, indent=2)}")
+                    logging.info(f"⏱️ TIMING: {json.dumps(times, indent=2)}")
                     
-                    response = {
+                    return make_json_serializable({
                         "status": "success",
                         "content": text_response,
                         "type": "text_response",
@@ -965,36 +914,28 @@ def handle_chat_request(data):
                         "thread_id": thread.id,
                         "user_id": user_id,
                         "timing_breakdown": times
-                    }
-                    
-                    return make_json_serializable(response)
+                    })
                 else:
-                    # Code was executed
                     times['execution_loop'] = time.time() - t8
                     times['total'] = time.time() - start_total
                     
-                    logging.info(f"⏱️  TIMING BREAKDOWN: {json.dumps(times, indent=2)}")
-                    
-                    response = {
+                    return make_json_serializable({
                         "status": "success",
                         "content": "Analysis completed",
                         "type": "code_execution_complete",
-                        "agent_id": text_agent_id,
-                        "thread_id": thread.id,
                         "analysis_data": analysis_data,
+                        "thread_id": thread.id,
                         "user_id": user_id,
                         "timing_breakdown": times
-                    }
-                    
-                    return make_json_serializable(response)
+                    })
             
-            # ===== CASE 2: REQUIRES_ACTION =====
+            # ===== REQUIRES_ACTION =====
             elif run.status == "requires_action":
-                logging.info("🛠️ Run requires action - processing tool calls")
+                logging.info("🛠️ Processing tool calls")
                 
                 if run.required_action and run.required_action.submit_tool_outputs:
                     tool_calls = run.required_action.submit_tool_outputs.tool_calls
-                    logging.info(f"🔧 Processing {len(tool_calls)} tool call(s)")
+                    logging.info(f"🔧 {len(tool_calls)} tool call(s)")
                     
                     tool_outputs = []
                     
@@ -1004,23 +945,20 @@ def handle_chat_request(data):
                                 raw_arguments = tool_call.function.arguments
                                 
                                 if not raw_arguments or not raw_arguments.strip():
-                                    logging.warning("⚠️ Empty arguments, using fallback")
                                     function_args = {
-                                        "python_code": "result = 'Hello! I can help you with weather data analysis.'",
+                                        "python_code": "result = 'Hello! I can help with weather data.'",
                                         "user_request": user_query
                                     }
                                 else:
                                     function_args = json.loads(raw_arguments)
                                 
-                                # Pass user_id to code execution
                                 function_args["user_id"] = user_id
                                 
                                 logging.info("🚀 Executing custom code...")
                                 analysis_result = execute_custom_code(function_args)
                                 custom_code_executed = True
                                 analysis_data = analysis_result
-
-                                # Handle result
+                                
                                 if analysis_result.get("status") == "success":
                                     result_value = analysis_result.get("result")
                                     
@@ -1028,10 +966,10 @@ def handle_chat_request(data):
                                     if isinstance(result_value, dict) and ("static_url" in result_value or "overlay_url" in result_value):
                                         logging.info("🗺️ Map result detected")
                                         
-                                        # Extract analysis info
-                                        extracted_info = extract_analysis_info(user_query, result_value, memory_context_str)
-
-                                        # ✅ ONLY store if extraction succeeded
+                                        # Extract info (passing memory_context)
+                                        extracted_info = extract_analysis_info(user_query, result_value, memory_context)
+                                        
+                                        # Store if extraction succeeded
                                         if "error" not in extracted_info:
                                             memory_manager.add_structured_analysis(
                                                 user_id=user_id,
@@ -1042,31 +980,25 @@ def handle_chat_request(data):
                                                 result_url=result_value.get("static_url"),
                                                 color_range=result_value.get("color_scale")
                                             )
-                                            logging.info(f"💾 Stored structured analysis memory for {user_id}")
+                                            logging.info(f"💾 Stored analysis memory for {user_id}")
                                         else:
-                                            logging.warning(f"⚠️ Skipping memory storage due to extraction error: {extracted_info.get('error')}")
+                                            logging.warning(f"⚠️ Skipping memory: {extracted_info.get('error')}")
                                         
-                                        # ✅ CRITICAL: Continue processing regardless of memory storage
+                                        # Continue processing
                                         enriched = normalize_map_result_dict(result_value, user_query)
                                         enriched["temperature_data"] = build_temperature_data(enriched.get("geojson", {}))
                                         
                                         use_tiles = should_use_tiles(user_query, enriched)
-
+                                        
                                         if use_tiles:
-                                            # ✅ Only create tiles if we have valid metadata
                                             if "error" not in extracted_info:
                                                 tile_config = create_tile_config(enriched, user_query, extracted_info)
                                             else:
-                                                # Fallback: Try to create tile config without extracted_info
-                                                logging.warning(f"⚠️ Creating tile config without extracted_info: {extracted_info.get('error')}")
                                                 tile_config = create_tile_config(enriched, user_query, date_info=None)
                                             
-                                            # Check if tile config failed
                                             if "error" in tile_config:
-                                                logging.warning(f"⚠️ Tile generation failed: {tile_config['error']}")
-                                                logging.info("📍 Falling back to static-only response")
+                                                logging.warning(f"⚠️ Tile error: {tile_config['error']}")
                                                 
-                                                # Return static-only response
                                                 tool_outputs.append({
                                                     "tool_call_id": tool_call.id,
                                                     "output": json.dumps({"status": "success", "completed": True})
@@ -1081,29 +1013,22 @@ def handle_chat_request(data):
                                                 times['execution_loop'] = time.time() - t8
                                                 times['total'] = time.time() - start_total
                                                 
-                                                logging.info(f"⏱️  TIMING BREAKDOWN: {json.dumps(times, indent=2)}")
-                                                
-                                                response = {
+                                                return make_json_serializable({
                                                     "status": "success",
                                                     "content": enriched.get("static_url", "Map generated"),
                                                     "static_url": enriched.get("static_url"),
                                                     "overlay_url": enriched.get("overlay_url"),
                                                     "geojson": enriched["geojson"],
                                                     "bounds": enriched["bounds"],
-                                                    "map_config": enriched["map_config"],
                                                     "temperature_data": enriched["temperature_data"],
                                                     "type": "visualization_with_overlay",
-                                                    "agent_id": text_agent_id,
                                                     "thread_id": thread.id,
-                                                    "analysis_data": analysis_result,
                                                     "user_id": user_id,
                                                     "tile_error": tile_config.get('error'),
                                                     "timing_breakdown": times
-                                                }
-                                                
-                                                return make_json_serializable(response)
+                                                })
                                             
-                                            # Success - tiles generated
+                                            # Success
                                             tool_outputs.append({
                                                 "tool_call_id": tool_call.id,
                                                 "output": json.dumps({"status": "success", "completed": True})
@@ -1118,30 +1043,23 @@ def handle_chat_request(data):
                                             times['execution_loop'] = time.time() - t8
                                             times['total'] = time.time() - start_total
                                             
-                                            logging.info(f"⏱️  TIMING BREAKDOWN: {json.dumps(times, indent=2)}")
-                                            
-                                            response = {
+                                            return make_json_serializable({
                                                 "status": "success",
-                                                "content": enriched.get("static_url", "Interactive map generated"),
+                                                "content": "Interactive map generated",
                                                 "use_tiles": True,
                                                 "tile_config": tile_config,
                                                 "static_url": enriched.get("static_url"),
                                                 "geojson": enriched["geojson"],
                                                 "bounds": enriched["bounds"],
-                                                "map_config": enriched["map_config"],
                                                 "temperature_data": enriched["temperature_data"],
                                                 "type": "visualization_with_tiles",
-                                                "agent_id": text_agent_id,
                                                 "thread_id": thread.id,
-                                                "analysis_data": analysis_result,
                                                 "user_id": user_id,
                                                 "timing_breakdown": times
-                                            }
-                                            
-                                            return make_json_serializable(response)
+                                            })
                                         
                                         else:
-                                            # No tiles - static only
+                                            # Static only
                                             tool_outputs.append({
                                                 "tool_call_id": tool_call.id,
                                                 "output": json.dumps({"status": "success", "completed": True})
@@ -1156,41 +1074,32 @@ def handle_chat_request(data):
                                             times['execution_loop'] = time.time() - t8
                                             times['total'] = time.time() - start_total
                                             
-                                            logging.info(f"⏱️  TIMING BREAKDOWN: {json.dumps(times, indent=2)}")
-                                            
-                                            response = {
+                                            return make_json_serializable({
                                                 "status": "success",
                                                 "content": enriched.get("static_url", "Map generated"),
                                                 "static_url": enriched.get("static_url"),
                                                 "overlay_url": enriched.get("overlay_url"),
                                                 "geojson": enriched["geojson"],
                                                 "bounds": enriched["bounds"],
-                                                "map_config": enriched["map_config"],
                                                 "temperature_data": enriched["temperature_data"],
                                                 "type": "visualization_with_overlay",
-                                                "agent_id": text_agent_id,
                                                 "thread_id": thread.id,
-                                                "analysis_data": analysis_result,
                                                 "user_id": user_id,
                                                 "timing_breakdown": times
-                                            }
-                                            
-                                            return make_json_serializable(response)
+                                            })
                                     else:
-                                        # Text result (not a map)
+                                        # Text result
                                         memory_manager.add(
                                             f"Query: {user_query}\nResult: {str(result_value)[:200]}",
                                             user_id,
                                             {"type": "analysis", "query": user_query}
                                         )
-                                        logging.info(f"💾 Stored text analysis in memory for {user_id}")
                                         
                                         tool_outputs.append({
                                             "tool_call_id": tool_call.id,
                                             "output": json.dumps({"status": "success", "result": str(result_value)})
                                         })
                                 else:
-                                    # Execution failed
                                     error_msg = analysis_result.get("error", "Unknown error")
                                     tool_outputs.append({
                                         "tool_call_id": tool_call.id,
@@ -1204,114 +1113,87 @@ def handle_chat_request(data):
                                     "output": json.dumps({"status": "error", "error": str(e)})
                                 })
                     
-                    # Submit tool outputs
+                    # Submit outputs
                     try:
                         project_client.agents.runs.submit_tool_outputs(
                             thread_id=thread.id,
                             run_id=run.id,
                             tool_outputs=tool_outputs
                         )
-                        logging.info("✅ Tool outputs submitted")
+                        logging.info("✅ Submitted tool outputs")
                     except Exception as e:
-                        logging.error(f"❌ Failed to submit tool outputs: {e}")
+                        logging.error(f"❌ Submit failed: {e}")
             
-            # ===== CASE 3: FAILED/CANCELLED/EXPIRED =====
+            # ===== FAILED/CANCELLED/EXPIRED =====
             elif run.status in ["failed", "cancelled", "expired"]:
-                logging.error(f"❌ Run ended with status: {run.status}")
+                logging.error(f"❌ Run {run.status}")
                 times['execution_loop'] = time.time() - t8
                 times['total'] = time.time() - start_total
                 
-                logging.info(f"⏱️  ERROR TIMING: {json.dumps(times, indent=2)}")
-                
-                response = {
+                return make_json_serializable({
                     "status": "error",
                     "content": f"Agent run {run.status}",
                     "type": f"run_{run.status}",
-                    "agent_id": text_agent_id,
                     "thread_id": thread.id,
                     "user_id": user_id,
                     "timing_breakdown": times
-                }
-                
-                return make_json_serializable(response)
+                })
             
-            # ===== CASE 4: QUEUED/IN_PROGRESS =====
+            # ===== QUEUED/IN_PROGRESS =====
             elif run.status in ["queued", "in_progress"]:
-                # Variable wait time based on status
-                if run.status == "in_progress":
-                    time.sleep(0.5)
-                else:
-                    time.sleep(0.3)
+                time.sleep(0.5 if run.status == "in_progress" else 0.3)
             
-            # Refresh run status
+            # Refresh
             try:
                 run = _get_run(thread_id=thread.id, run_id=run.id)
             except Exception as e:
-                logging.error(f"❌ Error refreshing run: {e}")
+                logging.error(f"❌ Refresh error: {e}")
                 break
         
-        # Final timeout response
+        # Timeout
         times['execution_loop'] = time.time() - t8
         times['total'] = time.time() - start_total
-        elapsed_time = time.time() - start_time
         
-        logging.error(f"❌ Agent completion without execution:")
-        logging.error(f"   Final status: {run.status}")
-        logging.error(f"   Iterations: {iteration}/{max_iterations}")
-        logging.error(f"   Elapsed time: {elapsed_time:.1f}s")
-        logging.info(f"⏱️  TIMEOUT TIMING: {json.dumps(times, indent=2)}")
+        logging.error(f"❌ Timeout after {iteration} iterations")
         
-        response = {
+        return make_json_serializable({
             "status": "timeout_failure",
-            "content": f"Agent failed after {iteration} iterations ({elapsed_time:.1f}s). Status: {run.status}",
+            "content": f"Timeout after {iteration} iterations",
             "type": "timeout",
-            "agent_id": text_agent_id,
             "thread_id": thread.id,
             "user_id": user_id,
-            "debug": {
-                "iterations": iteration,
-                "final_status": run.status,
-                "elapsed_time": elapsed_time
-            },
             "timing_breakdown": times
-        }
-        
-        return make_json_serializable(response)
+        })
         
     except Exception as e:
         times['total'] = time.time() - start_total
-        logging.error(f"❌ Chat request error: {e}", exc_info=True)
-        logging.info(f"⏱️  ERROR TIMING: {json.dumps(times, indent=2)}")
+        logging.error(f"❌ Error: {e}", exc_info=True)
         
-        response = {
+        return make_json_serializable({
             "status": "error",
             "content": str(e),
             "error_type": type(e).__name__,
             "user_id": data.get("user_id", "unknown"),
+            "thread_id": data.get("thread_id"),
             "timing_breakdown": times
-        }
-        
-        return make_json_serializable(response)
+        })
+
 
 def make_json_serializable(obj, _seen=None):
-    """Enhanced JSON serialization that handles all Python types including circular references"""
+    """Enhanced JSON serialization"""
     import types
     from datetime import datetime, date
     
-    # Track seen objects to prevent infinite recursion
     if _seen is None:
         _seen = set()
     
-    # Check if we've seen this object before (circular reference)
     obj_id = id(obj)
     if obj_id in _seen:
         return f"<circular reference to {type(obj).__name__}>"
     
-    # Add basic types that don't need recursion tracking
     if isinstance(obj, (str, int, float, bool, type(None))):
         return obj
     
-    # Mark this object as seen
     _seen.add(obj_id)
     
     try:
@@ -1332,17 +1214,15 @@ def make_json_serializable(obj, _seen=None):
         elif isinstance(obj, types.MappingProxyType):
             return {k: make_json_serializable(v, _seen) for k, v in obj.items()}
         elif hasattr(obj, '__dict__'):
-            # Avoid infinite recursion on complex objects
             try:
                 return {k: make_json_serializable(v, _seen) for k, v in obj.__dict__.items() if not k.startswith('_')}
             except:
                 return str(obj)
-        elif hasattr(obj, '_asdict'):  # namedtuple
+        elif hasattr(obj, '_asdict'):
             return make_json_serializable(obj._asdict(), _seen)
         else:
             return str(obj)
-    except Exception as e:
+    except Exception:
         return f"<serialization error: {type(obj).__name__}>"
     finally:
-        # Remove from seen set after processing
         _seen.discard(obj_id)

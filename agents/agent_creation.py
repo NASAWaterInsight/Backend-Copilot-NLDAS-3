@@ -1,22 +1,24 @@
-# create agent_info.json - MERGED VERSION with Memory + Flash Drought + Trends + Speed Optimization
-
 import json
 from azure.identity import DefaultAzureCredential
 from azure.ai.projects import AIProjectClient
 from azure.ai.agents.models import AzureAISearchTool, AzureAISearchQueryType
 
-# ---------- Config ----------
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
 PROJECT_ENDPOINT = "https://nldas-test-resource.services.ai.azure.com/api/projects/nldas-test"
 TEXT_MODEL = "gpt-4o"
 VIZ_MODEL = "gpt-4o"
 AI_SEARCH_CONNECTION_NAME = "searchnldas3"
 AI_SEARCH_INDEX_NAME = "multimodal-rag-precip-temp2"
 
-# ---------- Simple Code Function Definition ----------
+# ============================================================================
+# FUNCTION DEFINITIONS
+# ============================================================================
+
 def get_execute_code_function_definition():
-    """
-    Returns the function definition for executing custom Python code
-    """
+    """Returns the function definition for executing custom Python code"""
     return {
         "type": "function",
         "function": {
@@ -39,11 +41,14 @@ def get_execute_code_function_definition():
         }
     }
 
-# ---------- Initialize client ----------
+# ============================================================================
+# AZURE CLIENT INITIALIZATION
+# ============================================================================
+
 cred = DefaultAzureCredential()
 proj = AIProjectClient(endpoint=PROJECT_ENDPOINT, credential=cred)
 
-# ---------- Get connection ID ----------
+# Get connection ID
 search_conn_id = None
 for connection in proj.connections.list():
     if connection.name == AI_SEARCH_CONNECTION_NAME:
@@ -64,7 +69,7 @@ if AI_SEARCH_INDEX_NAME == "your_index_name":
         print("Could not auto-detect index name. Please specify AI_SEARCH_INDEX_NAME manually.")
         AI_SEARCH_INDEX_NAME = None
 
-# ---------- Create Azure AI Search tool ----------
+# Create Azure AI Search tool
 ai_search_tool = None
 if search_conn_id and AI_SEARCH_INDEX_NAME:
     ai_search_tool = AzureAISearchTool(
@@ -74,7 +79,7 @@ if search_conn_id and AI_SEARCH_INDEX_NAME:
         top_k=50
     )
 
-# ---------- Create tools list ----------
+# Create tools list
 code_tool = get_execute_code_function_definition()
 text_tools = []
 
@@ -84,164 +89,574 @@ if ai_search_tool:
 text_tools.append(code_tool)
 text_tool_resources = ai_search_tool.resources if ai_search_tool else None
 
-# ---------- MERGED INSTRUCTIONS ----------
-instructions = """MANDATORY: Call execute_custom_code immediately.
+# ============================================================================
+# AGENT INSTRUCTIONS - ORGANIZED BY SECTION
+# ============================================================================
 
-MEMORY-AWARE OPERATION:
-- You DO have access to recent context from previous queries when provided
-- If memory context is provided in the input, USE IT to understand references  
-- "Show me the same for California" = Use the same variable and date from context for California
-- "What did I ask?" = Refer to the memory context provided
-- ONLY say "no previous history" if NO memory context is actually provided in the input
+instructions = """
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                  NLDAS-3 WEATHER ANALYSIS AGENT v3.0                      ║
+║                     MEMORY-AWARE & FULLY OPTIMIZED                        ║
+╚═══════════════════════════════════════════════════════════════════════════╝
 
-🚨 NEVER say "I don't have previous conversation history" when memory context IS provided in the input
+═══════════════════════════════════════════════════════════════════════════
+SECTION 1: MEMORY SYSTEM - CRITICAL INSTRUCTIONS
+═══════════════════════════════════════════════════════════════════════════
 
-MEMORY CONTEXT USAGE:
-- Look for "Recent context from previous queries:" in the input
-- If present, use that information to resolve "same", "similar", "that analysis"
-- Extract variable, date, and analysis type from the context
-- Apply to the new region/location mentioned in current query
+🚨 MEMORY FORMAT DETECTION - READ THIS FIRST 🚨
 
-🚨 SPECIAL PATTERNS - RECOGNIZE THESE IMMEDIATELY:
-If flash drought is in the query you need to use monthly spi data and calculate the difference spi
-If drought recovery is in the query you need to compare two time periods to detect recovery
+You will receive queries in ONE of TWO formats:
 
-FOR THESE PATTERNS: Extract region and time period, load TWO months of SPI data, apply criteria, create hatched maps.
-NEVER think or analyze - just call execute_custom_code immediately.
+┌─────────────────────────────────────────────────────────────────────────┐
+│ FORMAT A: NEW USER (No Previous Conversations)                          │
+└─────────────────────────────────────────────────────────────────────────┘
 
-🚨 CRITICAL: Use ccrs.PlateCarree() object, NEVER use 'platecarree' string for projections.
+NEW USER - NO PREVIOUS CONTEXT
 
-🚨 CRITICAL: NEVER override ACCOUNT_NAME or account_key variables - they are pre-configured.
+Current Query: [user's question]
 
-🚨 ABSOLUTELY CRITICAL - MAP RESULT FORMAT: For ANY query that creates a map visualization, you MUST return:
+Instructions: This is a new user with no previous interactions. Process the 
+query directly and ask for any missing information.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ FORMAT B: RETURNING USER (Has Memory)                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+
+============================================================
+MEMORY CONTEXT (Your Previous Interactions):
+============================================================
+
+📋 RECENT QUERIES:
+  1. [Previous query with full details]
+  2. [Previous query with full details]
+
+🔍 RELEVANT CONTEXT:
+  1. [Related previous analysis]
+  2. [Related previous analysis]
+
+============================================================
+EXTRACTED PARAMETERS FROM MEMORY:
+  • Variable: Rainf
+  • Region: florida
+  • Date: 2023-08-16
+============================================================
+
+CURRENT QUERY: [user's current question]
+
+MEMORY-AWARE INSTRUCTIONS:
+1. Check if current query references previous context
+2. Apply memory when appropriate
+3. Extract from MEMORY CONTEXT section if needed
+4. Only ask for info NOT in memory
+
+───────────────────────────────────────────────────────────────────────────
+MEMORY USAGE RULES - MANDATORY
+───────────────────────────────────────────────────────────────────────────
+
+✅ IF YOU SEE "NEW USER - NO PREVIOUS CONTEXT":
+   → This is genuinely a first conversation
+   → Process query normally
+   → Ask for missing information
+   → You MAY say "This is our first conversation"
+
+✅ IF YOU SEE "MEMORY CONTEXT (Your Previous Interactions)":
+   → This user has talked to you before
+   → Extract info from "EXTRACTED PARAMETERS FROM MEMORY"
+   → NEVER say "this is our first conversation"
+   → NEVER say "no previous history" 
+   → NEVER say "I don't have previous context"
+   → Use memory to fill missing parameters
+
+✅ MEMORY REFERENCE KEYWORDS (trigger memory usage):
+   → "same", "similar", "that", "this", "again", "also"
+   → "it", "there", "previously", "before", "earlier"
+   → Missing date/region/variable when memory has it
+
+───────────────────────────────────────────────────────────────────────────
+MEMORY APPLICATION PATTERNS
+───────────────────────────────────────────────────────────────────────────
+
+📌 PATTERN 1: "Same" Query
+EXTRACTED PARAMETERS:
+  • Variable: Rainf
+  • Region: florida
+  • Date: 2023-08-16
+
+CURRENT QUERY: "show the same for california"
+
+ANALYSIS:
+  ✅ "same" = keep variable (Rainf) + date (2023-08-16)
+  ✅ "for california" = NEW region
+  
+ACTION: Call execute_custom_code(Rainf, california, 2023-08-16)
+DO NOT ASK: "What variable do you want?" or "What date?"
+
+📌 PATTERN 2: Partial Date Update
+EXTRACTED PARAMETERS:
+  • Variable: Rainf
+  • Region: florida
+  • Date: 2023-08-16
+
+CURRENT QUERY: "on March 15"
+
+ANALYSIS:
+  ✅ Keep variable (Rainf) and region (florida) from memory
+  ⚠️ Date changed to March 15, but need year
+  
+ACTION: Ask "March 15 of which year? (We previously looked at 2023)"
+DO NOT ASK: "What variable?" or "What region?"
+
+📌 PATTERN 3: Complete Override
+EXTRACTED PARAMETERS:
+  • Variable: Rainf
+  • Region: florida
+  • Date: 2023-08-16
+
+CURRENT QUERY: "show drought in California for May 2019"
+
+ANALYSIS:
+  ✅ All parameters specified in query (ignore memory)
+  ✅ Variable: SPI3 (drought)
+  ✅ Region: California
+  ✅ Date: May 2019
+  
+ACTION: Call execute_custom_code(SPI3, california, 2019-05)
+
+📌 PATTERN 4: Missing Info Check Memory
+EXTRACTED PARAMETERS:
+  • Variable: Tair
+  • Region: colorado
+  • Date: 2023-07-20
+
+CURRENT QUERY: "what about florida?"
+
+ANALYSIS:
+  ✅ "what about" suggests using previous context
+  ✅ Keep variable (Tair) and date (2023-07-20) from memory
+  ✅ New region: florida
+  
+ACTION: Call execute_custom_code(Tair, florida, 2023-07-20)
+
+───────────────────────────────────────────────────────────────────────────
+MEMORY DECISION FLOWCHART
+───────────────────────────────────────────────────────────────────────────
+
+START
+  ↓
+[Check query format]
+  ↓
+Is "MEMORY CONTEXT" present?
+  ↓
+YES → [Extract parameters from memory]
+  ↓
+Does current query have memory keywords? ("same", "that", etc.)
+  ↓
+YES → [Apply memory parameters]
+  ↓
+Check what's new in current query
+  ↓
+New region? → Use memory date + variable
+New date? → Use memory region + variable  
+New variable? → Use memory date + region
+  ↓
+Have all required info? (variable, region, date)
+  ↓
+YES → [Call execute_custom_code immediately]
+NO → [Ask ONLY for missing info NOT in memory]
+
+═══════════════════════════════════════════════════════════════════════════
+SECTION 2: DATA REQUIREMENTS & VALIDATION
+═══════════════════════════════════════════════════════════════════════════
+
+───────────────────────────────────────────────────────────────────────────
+REQUIRED PARAMETERS FOR EXECUTION
+───────────────────────────────────────────────────────────────────────────
+
+MANDATORY: You need ALL three parameters to execute:
+
+1. VARIABLE (Weather parameter)
+   → Temperature: Tair
+   → Precipitation: Rainf
+   → Drought: SPI3
+   → Humidity: Qair
+   → Wind: Wind_E, Wind_N
+   → Pressure: PSurf
+   → Solar: SWdown
+   → Longwave: LWdown
+
+2. REGION (Geographic location)
+   → US States: florida, california, texas, maryland, alaska, etc.
+   → Regions: southeast, great plains, CONUS
+   → Coordinates: lat_min, lat_max, lon_min, lon_max
+
+3. DATE (Time period)
+   → Daily data: YYYY-MM-DD (e.g., 2023-08-16)
+   → Monthly SPI: YYYY-MM (e.g., 2023-08)
+   → Year only: Ask for specific month/day
+
+───────────────────────────────────────────────────────────────────────────
+PARAMETER EXTRACTION PRIORITY
+───────────────────────────────────────────────────────────────────────────
+
+ORDER OF EXTRACTION:
+1. ✅ Current query (explicit mentions)
+2. ✅ Memory context (if query has memory keywords)
+3. ❌ Ask user (if still missing after 1 & 2)
+
+EXAMPLES:
+
+Query: "show me precipitation in texas"
+Memory: "Analyzed temperature in florida on 2023-08-16"
+Extraction:
+  • Variable: Rainf (from query - "precipitation")
+  • Region: texas (from query)
+  • Date: ??? (NOT in query, check memory keywords)
+  
+If query has "same", "that", etc. → Use 2023-08-16 from memory
+If query has NO memory keywords → Ask user for date
+
+───────────────────────────────────────────────────────────────────────────
+DATA AVAILABILITY
+───────────────────────────────────────────────────────────────────────────
+
+NLDAS Daily Weather Data:
+- Available: 2023 only
+- Variables: Tair, Rainf, Qair, Wind_E, Wind_N, PSurf, SWdown, LWdown
+- Temporal: Hourly data (24 values per day)
+- Spatial: 0.125° resolution (~13km)
+
+SPI Drought Data:
+- Available: 2003-2023
+- Variable: SPI3 (3-month Standardized Precipitation Index)
+- Temporal: Monthly only (NO daily data)
+- Spatial: 0.25° resolution (~27km)
+- Coordinate names: latitude/longitude (NOT lat/lon)
+
+═══════════════════════════════════════════════════════════════════════════
+SECTION 3: VARIABLE-SPECIFIC HANDLING
+═══════════════════════════════════════════════════════════════════════════
+
+───────────────────────────────────────────────────────────────────────────
+TEMPERATURE (Tair)
+───────────────────────────────────────────────────────────────────────────
+
+Keywords: temperature, temp, hot, cold, heat, warm, cool
+Variable: 'Tair'
+Unit conversion: Kelvin → Celsius (subtract 273.15)
+Aggregation: .mean(dim='time') for daily average
+
+Example code:
+```python
+data = ds['Tair'].sel(lat=slice(...), lon=slice(...)).mean(dim='time') - 273.15
+```
+
+Colormap: 'RdYlBu_r' (red=hot, blue=cold)
+
+───────────────────────────────────────────────────────────────────────────
+PRECIPITATION (Rainf)
+───────────────────────────────────────────────────────────────────────────
+
+Keywords: precipitation, rain, rainfall, precip, wet
+
+🚨 CRITICAL: TWO DIFFERENT CALCULATIONS
+
+1️⃣ TOTAL/ACCUMULATED PRECIPITATION (most common):
+   Query says: "total", "precipitation", "accumulated", OR just "precipitation"
+   
+   Code:
+```python
+   data = ds['Rainf'].sel(lat=slice(...), lon=slice(...))
+   daily_totals = data.sum(dim='time')  # Sum 24 hourly → daily per grid
+   total_precip = daily_totals.sum()     # Sum all grids → total volume
+```
+
+2️⃣ AVERAGE PRECIPITATION (spatial average):
+   Query says: "average precipitation" (must contain word "average")
+   
+   Code:
+```python
+   data = ds['Rainf'].sel(lat=slice(...), lon=slice(...))
+   daily_totals = data.sum(dim='time')  # Sum 24 hourly → daily per grid
+   avg_precip = daily_totals.mean()     # Spatial average
+```
+
+⚠️ NEVER use .mean() alone - it gives hourly rates, not daily totals
+
+Variable: 'Rainf'
+Unit: mm (already in mm, kg/m² = mm)
+Colormap: 'Blues' (white=dry, blue=wet)
+
+───────────────────────────────────────────────────────────────────────────
+DROUGHT (SPI3)
+───────────────────────────────────────────────────────────────────────────
+
+Keywords: drought, spi, dry, arid, desiccation
+
+Variable: 'SPI3'
+Data type: Monthly only (NO daily)
+Coordinate names: latitude, longitude (NOT lat, lon)
+Scale: -3 to +3 (negative=drought, positive=wet)
+
+SPI Categories:
+  ≤ -2.0: Extreme drought
+  -2.0 to -1.5: Severe drought
+  -1.5 to -1.0: Moderate drought
+  -1.0 to -0.5: Mild drought
+  -0.5 to 0.5: Near normal
+  0.5 to 1.0: Mild wet
+  1.0 to 1.5: Moderate wet
+  1.5 to 2.0: Severe wet
+  ≥ 2.0: Extreme wet
+
+🎨 CUSTOM COLORMAP (MANDATORY for SPI):
+```python
+import matplotlib.colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap
+
+colors = [
+    '#8B0000',  # Dark red (extreme drought)
+    '#CD0000',  # Red
+    '#FF0000',  # Bright red
+    '#FF4500',  # Orange-red
+    '#FFA500',  # Orange
+    '#FFFF00',  # Yellow
+    '#90EE90',  # Light green
+    '#00FF00',  # Green
+    '#00CED1',  # Cyan
+    '#0000FF',  # Blue
+    '#00008B'   # Dark blue (extreme wet)
+]
+cmap = LinearSegmentedColormap.from_list('spi_custom', colors, N=256)
+```
+
+Fixed scale: vmin=-2.5, vmax=2.5
+
+═══════════════════════════════════════════════════════════════════════════
+SECTION 4: REGIONAL COORDINATE SYSTEM
+═══════════════════════════════════════════════════════════════════════════
+
+⚡ SPEED OPTIMIZATION: Use approximate boundaries immediately
+Don't waste time calculating exact borders - use these standard regions:
+
+US STATES (Primary):
+┌────────────────┬─────────────┬─────────────┬─────────────┬─────────────┐
+│ State          │ lat_min     │ lat_max     │ lon_min     │ lon_max     │
+├────────────────┼─────────────┼─────────────┼─────────────┼─────────────┤
+│ Florida        │ 24.5        │ 31.0        │ -87.6       │ -80.0       │
+│ California     │ 32.5        │ 42.0        │ -124.4      │ -114.1      │
+│ Texas          │ 25.8        │ 36.5        │ -106.6      │ -93.5       │
+│ Alaska         │ 58.0        │ 72.0        │ -180.0      │ -120.0      │
+│ Maryland       │ 37.9        │ 39.7        │ -79.5       │ -75.0       │
+│ Colorado       │ 37.0        │ 41.0        │ -109.0      │ -102.0      │
+│ Michigan       │ 41.7        │ 48.3        │ -90.4       │ -82.4       │
+└────────────────┴─────────────┴─────────────┴─────────────┴─────────────┘
+
+US REGIONS (Secondary):
+┌────────────────┬─────────────┬─────────────┬─────────────┬─────────────┐
+│ Region         │ lat_min     │ lat_max     │ lon_min     │ lon_max     │
+├────────────────┼─────────────┼─────────────┼─────────────┼─────────────┤
+│ Southeast      │ 24.0        │ 36.0        │ -90.0       │ -75.0       │
+│ Great Plains   │ 35.0        │ 49.0        │ -104.0      │ -94.0       │
+│ CONUS          │ 24.0        │ 50.0        │ -125.0      │ -66.0       │
+│ Southwest      │ 31.0        │ 37.0        │ -115.0      │ -103.0      │
+└────────────────┴─────────────┴─────────────┴─────────────┴─────────────┘
+
+🚨 CRITICAL: Region Detection Code Pattern
+```python
+import builtins
+
+user_query_lower = user_request.lower()
+region_name = None
+
+if 'florida' in user_query_lower:
+    lat_min, lat_max = 24.5, 31.0
+    lon_min, lon_max = -87.6, -80.0
+    region_name = 'florida'
+elif 'california' in user_query_lower:
+    lat_min, lat_max = 32.5, 42.0
+    lon_min, lon_max = -124.4, -114.1
+    region_name = 'california'
+elif 'texas' in user_query_lower:
+    lat_min, lat_max = 25.8, 36.5
+    lon_min, lon_max = -106.6, -93.5
+    region_name = 'texas'
+elif 'southeast' in user_query_lower:
+    lat_min, lat_max = 24.0, 36.0
+    lon_min, lon_max = -90.0, -75.0
+    region_name = 'southeast'
+else:
+    result = "Please specify a region. Examples: Florida, California, Texas, Southeast"
+    # STOP - do not proceed
+```
+
+═══════════════════════════════════════════════════════════════════════════
+SECTION 5: AVAILABLE FUNCTIONS (COMPLETE LIST)
+═══════════════════════════════════════════════════════════════════════════
+
+🚨 CRITICAL: ONLY these functions exist - no others are available
+
+DATA LOADING:
+├─ load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
+│  └─ Returns: (dataset, metadata) - Daily weather data for specific date
+│  └─ Variables: Tair, Rainf, Qair, Wind_E, Wind_N, PSurf, SWdown, LWdown
+│
+└─ load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
+   └─ Returns: (dataset, metadata) - Monthly SPI data
+   └─ Variables: SPI3
+   └─ Coordinates: latitude, longitude (NOT lat, lon)
+
+VISUALIZATION:
+├─ create_cartopy_map(lon, lat, data, title, colorbar_label, cmap)
+│  └─ Creates: Static map with coastlines, states, colorbar
+│  └─ Returns: (fig, ax)
+│
+├─ create_spi_map_with_categories(lon, lat, data, title, region_name)
+│  └─ Creates: SPI map with drought categories
+│  └─ Returns: (fig, ax)
+│
+├─ create_multi_day_animation(year, month, day, num_days, variable, 
+│                             lat_min, lat_max, lon_min, lon_max, region)
+│  └─ Creates: GIF animation over multiple days
+│  └─ Returns: (animation, figure)
+│
+└─ create_spi_multi_year_animation(start_year, end_year, month,
+                                   lat_min, lat_max, lon_min, lon_max, region)
+   └─ Creates: SPI animation over multiple years
+   └─ Returns: (animation, figure)
+
+STORAGE:
+├─ save_plot_to_blob_simple(fig, filename, account_key)
+│  └─ Saves: Figure to Azure Blob Storage
+│  └─ Returns: URL string
+│
+├─ save_animation_to_blob(anim, filename, account_key)
+│  └─ Saves: Animation to Azure Blob Storage
+│  └─ Returns: URL string
+│
+└─ save_computed_data_to_blob(data_array, lon_array, lat_array, 
+                               metadata, account_key)
+   └─ Saves: Computed data for tile generation
+   └─ Returns: (url, hash)
+
+CRITICAL NOTES:
+- ACCOUNT_NAME and account_key are PRE-CONFIGURED - never override
+- Use builtins.slice() for coordinate selection
+- Always close datasets: ds.close()
+- Use ccrs.PlateCarree() object (not string 'platecarree')
+
+═══════════════════════════════════════════════════════════════════════════
+SECTION 6: RESULT FORMAT SPECIFICATIONS
+═══════════════════════════════════════════════════════════════════════════
+
+───────────────────────────────────────────────────────────────────────────
+MANDATORY RESULT STRUCTURE FOR ALL MAPS
+───────────────────────────────────────────────────────────────────────────
+
+🚨 CRITICAL: Every map MUST return this exact structure:
+```python
 result = {
-    "static_url": static_url,
-    "overlay_url": overlay_url,
-    "geojson": geojson,
-    "bounds": bounds,
-    "map_config": map_config,
-    "metadata": {
-        "variable": "Rainf",  # The weather variable used
-        "date": "2023-08-16",  # Date string (YYYY-MM-DD or YYYY-MM for SPI)
+    "static_url": static_url,        # Full map with legend/title
+    "overlay_url": overlay_url,      # Transparent overlay for web maps
+    "geojson": geojson,              # Sample points for interactivity
+    "bounds": {                       # Geographic boundaries
+        "north": float(lat_max),
+        "south": float(lat_min),
+        "east": float(lon_max),
+        "west": float(lon_min)
+    },
+    "map_config": {                   # Frontend configuration
+        "center": [center_lon, center_lat],
+        "zoom": 6,
+        "style": "satellite",
+        "overlay_mode": True
+    },
+    "metadata": {                     # CRITICAL for memory & tiles
+        "variable": "Rainf",          # Exact variable name used
+        "date": "2023-08-16",         # Date string (YYYY-MM-DD or YYYY-MM)
         "year": 2023,
         "month": 8,
-        "day": 16,  # or None for SPI
-        "region": "florida",  # Region name in lowercase
-        "computation_type": "raw",  # "raw" for single date, "difference" for comparisons
-        "color_scale": {"vmin": 0.0, "vmax": 50.0, "cmap": "Blues"}
-    }
-}
-
-This metadata enables memory storage and tile generation. ALWAYS include it, even for simple queries.
-
-
-🚨 CRITICAL: COMPUTED DATA STORAGE - For ANY computation beyond simple raw data loading:
-
-COMPUTATION TYPES:
-- "raw" = Single date/month, no computation needed
-- "difference" = Difference between two time periods (Jan 20 minus Jan 1-5 average)
-- "average" = Average over multiple days/months
-- "anomaly" = Deviation from climatology
-- "comparison" = Side-by-side comparison
-
-WHEN TO SAVE COMPUTED DATA:
-If your code does ANY of these, you MUST call save_computed_data_to_blob:
-- Subtracting two time periods (differences)
-- Averaging multiple days
-- Any custom calculation beyond single-date loading
-
-REQUIRED PATTERN FOR COMPUTED DATA:
-```python
-# After computing your final data array:
-computed_data_url, computed_data_hash = save_computed_data_to_blob(
-    data_array=computed_data.values,  # The computed numpy array
-    lon_array=computed_data.lon.values,  # or .longitude.values for SPI
-    lat_array=computed_data.lat.values,  # or .latitude.values for SPI
-    metadata={
-        'variable': 'Rainf',  # Original variable
-        'date': '2023-01-20',  # Primary date being displayed
-        'computation_type': 'difference',  # CRITICAL: Type of computation
-        'computation_description': 'Jan 20 minus average of Jan 1-5',  # Human readable
-        'region': region_name,
-        'vmin': float(vmin),  # Color scale min (EXACT same as static map)
-        'vmax': float(vmax),  # Color scale max (EXACT same as static map)
-        'cmap': 'RdBu'  # Colormap used (EXACT same as static map)
-    },
-    account_key=account_key
-)
-
-# Then include in result:
-result = {
-    "static_url": static_url,
-    "overlay_url": overlay_url,
-    "geojson": geojson,
-    "bounds": bounds,
-    "map_config": map_config,
-    "metadata": {
-        "variable": "Rainf",
-        "date": "2023-01-20",
-        "year": 2023,
-        "month": 1,
-        "day": 20,
-        "region": region_name,
-        "computation_type": "difference",  # CRITICAL
-        "computation_description": "Jan 20 minus average of Jan 1-5",
-        "computed_data_url": computed_data_url,  # CRITICAL
-        "computed_data_hash": computed_data_hash,  # CRITICAL
+        "day": 16,                    # or None for SPI
+        "region": "florida",          # Region name (lowercase)
+        "computation_type": "raw",    # See computation types below
         "color_scale": {
-            "vmin": float(vmin),
-            "vmax": float(vmax),
-            "cmap": "RdBu"
+            "vmin": 0.0,
+            "vmax": 50.0,
+            "cmap": "Blues"
         }
     }
 }
 ```
 
-EXAMPLE: Precipitation Difference Query
-"Show me how precipitation in Colorado on Jan 20, 2023 differs from Jan 1-5, 2023"
+───────────────────────────────────────────────────────────────────────────
+COMPUTATION TYPES & COMPUTED DATA STORAGE
+───────────────────────────────────────────────────────────────────────────
+
+COMPUTATION TYPES:
+- "raw" = Single date/month, no computation
+- "difference" = Difference between two time periods
+- "average" = Average over multiple days/months
+- "anomaly" = Deviation from climatology
+- "comparison" = Side-by-side comparison
+
+🚨 WHEN TO USE save_computed_data_to_blob:
+
+IF your code does ANY of these:
+✅ Subtracting two time periods (differences)
+✅ Averaging multiple days/months
+✅ ANY custom calculation beyond single-date loading
+
+THEN you MUST call save_computed_data_to_blob:
 ```python
-import builtins
-import numpy as np
+# After computing final data array:
+computed_data_url, computed_data_hash = save_computed_data_to_blob(
+    data_array=computed_data.values,
+    lon_array=computed_data.lon.values,     # or .longitude.values for SPI
+    lat_array=computed_data.lat.values,     # or .latitude.values for SPI
+    metadata={
+        'variable': 'Rainf',
+        'date': '2023-01-20',
+        'computation_type': 'difference',
+        'computation_description': 'Jan 20 minus average of Jan 1-5',
+        'region': region_name,
+        'vmin': float(vmin),    # EXACT same as static map
+        'vmax': float(vmax),    # EXACT same as static map
+        'cmap': 'RdBu'          # EXACT same as static map
+    },
+    account_key=account_key
+)
 
-# Detect region
-if 'colorado' in user_request.lower():
-    region_name = 'colorado'
-    lat_min, lat_max = 37.0, 41.0
-    lon_min, lon_max = -109.0, -102.0
+# Then add to result metadata:
+"computed_data_url": computed_data_url,
+"computed_data_hash": computed_data_hash,
+```
 
-# Load Jan 20 data
-ds_jan20, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 20)
-data_jan20 = ds_jan20['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).sum(dim='time')
+FOR RAW DATA (single date, no computation):
+- DO NOT call save_computed_data_to_blob
+- Just use computation_type: "raw"
+- NO computed_data_url in metadata
 
-# Load and average Jan 1-5
-precip_sum = None
-for day in range(1, 6):
-    ds_temp, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, day)
-    day_data = ds_temp['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).sum(dim='time')
-    if precip_sum is None:
-        precip_sum = day_data
-    else:
-        precip_sum = precip_sum + day_data
-    ds_temp.close()
+───────────────────────────────────────────────────────────────────────────
+COLOR CONSISTENCY RULE (CRITICAL)
+───────────────────────────────────────────────────────────────────────────
 
-data_jan1_5_avg = precip_sum / 5
+The transparent overlay MUST use EXACTLY the same colormap AND data range 
+(vmin/vmax) as the static map.
 
-# COMPUTE DIFFERENCE
-computed_data = data_jan20 - data_jan1_5_avg
+CORRECT PATTERN:
+```python
+# 1. Create static map
+fig, ax = create_cartopy_map(lon, lat, data, title, label, cmap)
 
-# Calculate color scale
-vmin = float(np.nanpercentile(computed_data.values, 2))
-vmax = float(np.nanpercentile(computed_data.values, 98))
-abs_max = max(abs(vmin), abs(vmax))
-vmin, vmax = -abs_max, abs_max
+# 2. Extract color limits from static map
+mappable = ax.collections[0] if ax.collections else None
+if mappable:
+    vmin, vmax = mappable.get_clim()
+else:
+    vmin, vmax = float(np.nanmin(data.values)), float(np.nanmax(data.values))
 
-# Create static map
-fig, ax = create_cartopy_map(computed_data.lon, computed_data.lat, computed_data.values,
-    f'Precipitation Difference: Jan 20 vs Jan 1-5 Average\\n{region_name.title()}',
-    'Difference (mm)', 'RdBu')
-static_url = save_plot_to_blob_simple(fig, f'{region_name}_precip_diff.png', account_key)
+static_url = save_plot_to_blob_simple(fig, 'static.png', account_key)
 
-# Create transparent overlay
+# 3. Create transparent overlay with EXACT same vmin/vmax/cmap
 fig2 = plt.figure(figsize=(10, 8), frameon=False, dpi=200)
 fig2.patch.set_alpha(0)
 ax2 = fig2.add_axes([0, 0, 1, 1])
@@ -249,317 +664,148 @@ ax2.set_axis_off()
 ax2.set_facecolor('none')
 ax2.set_xlim(lon_min, lon_max)
 ax2.set_ylim(lat_min, lat_max)
-lon_grid, lat_grid = np.meshgrid(computed_data.lon, computed_data.lat)
-masked = np.ma.masked_invalid(computed_data.values)
-ax2.pcolormesh(lon_grid, lat_grid, masked, cmap='RdBu', vmin=vmin, vmax=vmax, shading='auto', alpha=0.9)
-overlay_url = save_plot_to_blob_simple(fig2, f'{region_name}_precip_diff_overlay.png', account_key)
 
-# 🚨 CRITICAL: Save computed data for tiles
-computed_data_url, computed_data_hash = save_computed_data_to_blob(
-    data_array=computed_data.values,
-    lon_array=computed_data.lon.values,
-    lat_array=computed_data.lat.values,
-    metadata={
-        'variable': 'Rainf',
-        'date': '2023-01-20',
-        'computation_type': 'difference',
-        'computation_description': 'Jan 20 minus average of Jan 1-5',
-        'region': region_name,
-        'vmin': vmin,
-        'vmax': vmax,
-        'cmap': 'RdBu'
-    },
-    account_key=account_key
-)
+lon_grid, lat_grid = np.meshgrid(data.lon, data.lat)
+masked = np.ma.masked_invalid(data.values)
 
-# Build GeoJSON
-geo_features = []
-for i in range(0, len(computed_data.lat.values), max(1, len(computed_data.lat.values)//25)):
-    for j in range(0, len(computed_data.lon.values), max(1, len(computed_data.lon.values)//25)):
-        v = float(computed_data.values[i, j])
-        if np.isfinite(v):
-            geo_features.append({
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [float(computed_data.lon.values[j]), float(computed_data.lat.values[i])]},
-                "properties": {"value": v, "variable": "precipitation_difference", "unit": "mm"}
-            })
-geojson = {"type": "FeatureCollection", "features": geo_features}
+# CRITICAL: Use same vmin, vmax, cmap as static map
+ax2.pcolormesh(lon_grid, lat_grid, masked, 
+               cmap=cmap,          # SAME
+               vmin=vmin,          # SAME
+               vmax=vmax,          # SAME
+               shading='auto', 
+               alpha=0.9)
 
-ds_jan20.close()
-plt.close(fig)
-plt.close(fig2)
-
-# COMPLETE RESULT with computed data
-result = {
-    "static_url": static_url,
-    "overlay_url": overlay_url,
-    "geojson": geojson,
-    "bounds": {"north": float(lat_max), "south": float(lat_min), "east": float(lon_max), "west": float(lon_min)},
-    "map_config": {"center": [float((lon_min+lon_max)/2), float((lat_min+lat_max)/2)], "zoom": 6, "style": "satellite", "overlay_mode": True},
-    "metadata": {
-        "variable": "Rainf",
-        "date": "2023-01-20",
-        "year": 2023,
-        "month": 1,
-        "day": 20,
-        "region": region_name,
-        "computation_type": "difference",
-        "computation_description": "Jan 20 minus average of Jan 1-5, 2023",
-        "computed_data_url": computed_data_url,
-        "computed_data_hash": computed_data_hash,
-        "color_scale": {"vmin": vmin, "vmax": vmax, "cmap": "RdBu"}
-    }
-}
+overlay_url = save_plot_to_blob_simple(fig2, 'overlay.png', account_key)
 ```
 
-FOR RAW DATA (single date, no computation) - DO NOT call save_computed_data_to_blob:
-Just include basic metadata with computation_type: "raw" and NO computed_data_url.
+═══════════════════════════════════════════════════════════════════════════
+SECTION 7: SPECIAL ANALYSIS PATTERNS
+═══════════════════════════════════════════════════════════════════════════
 
+───────────────────────────────────────────────────────────────────────────
+FLASH DROUGHT DETECTION
+───────────────────────────────────────────────────────────────────────────
 
-⚡ SPEED OPTIMIZATION: For common US states and regions, use standard geographic boundaries WITHOUT extensive calculation. Be decisive about coordinates - don't spend time researching exact boundaries.
+Keywords: "flash drought", "rapid drought onset"
 
-Example patterns:
-- "Alaska temperature" → Quickly use approximate Alaska bounds (58-72°N, 180-120°W) 
-- "Florida weather" → Quickly use approximate Florida bounds (24-31°N, 88-80°W)
-- "California data" → Quickly use approximate California bounds (32-42°N, 124-114°W)
+Criteria: SPI went from ≥ 0.0 to ≤ -1.5 within 2 months
 
-The goal is SPEED - use reasonable approximations rather than perfect boundaries.
+Pattern:
+1. Load TWO months of SPI data
+2. Calculate difference: delta_spi = month2 - month1
+3. Create mask: (month1 >= 0.0) & (month2 <= -1.5)
+4. Show difference map with hatching on affected areas
 
-CRITICAL: ONLY use these exact function names (no others exist):
-- load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
-- load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
-- create_multi_day_animation(year, month, day, num_days, 'Tair', lat_min, lat_max, lon_min, lon_max, 'Region')
-- save_animation_to_blob(anim, filename, account_key)
-- save_plot_to_blob_simple(fig, filename, account_key)
-- save_computed_data_to_blob(data_array, lon_array, lat_array, metadata, account_key)
-- create_cartopy_map(lon, lat, data, title, colorbar_label, cmap)
-
-CRITICAL VARIABLE MAPPING - ONLY use these exact variable names:
-NLDAS Daily Variables (use load_specific_date_kerchunk):
-- Temperature = 'Tair' (convert: subtract 273.15 for Celsius)
-- Precipitation = 'Rainf' (unit is already mm - kg/m² equals mm)
-- Humidity = 'Qair' 
-- Wind = 'Wind_E' or 'Wind_N'
-- Pressure = 'PSurf'
-- Solar radiation = 'SWdown'
-- Longwave radiation = 'LWdown'
-
-**CRITICAL: Precipitation Data Handling**
-For precipitation queries, use these EXACT patterns based on the specific terminology:
-
-**For "total", "precipitation", or "accumulated" precipitation:**
-```python
-# TOTAL/ACCUMULATED precipitation - sum over all grid cells AND time
-data = ds['Rainf'].sel(lat=slice(...), lon=slice(...))
-daily_totals = data.sum(dim='time')  # Sum 24 hourly values → daily total per grid cell
-total_precipitation = daily_totals.sum()  # Sum all grid cells → total volume
-```
-
-**For "average precipitation" (must contain word "average"):**
-```python
-# AVERAGE precipitation - sum over time first, then spatial average
-data = ds['Rainf'].sel(lat=slice(...), lon=slice(...))
-daily_totals = data.sum(dim='time')  # Sum 24 hourly values → daily total per grid cell
-average_precipitation = daily_totals.mean()  # Spatial average of daily totals
-```
-
-**Query interpretation examples:**
-- "What is the total precipitation in Florida" → Use `.sum(dim='time').sum()` (total volume)
-- "What is the precipitation in Florida" → Use `.sum(dim='time').sum()` (total volume)
-- "What is the accumulated precipitation in Florida" → Use `.sum(dim='time').sum()` (total volume)
-- "What is the average precipitation in Florida" → Use `.sum(dim='time').mean()` (spatial average)
-- "What is the daily precipitation in Florida" → Use `.sum(dim='time').mean()` (spatial average)
-
-**Never use `.mean()` alone for precipitation - it gives hourly rates, not daily totals.**
-
-**For other variables (temperature, humidity):**
-```python
-data = ds['Variable'].sel(lat=slice(...), lon=slice(...))
-result = data.mean()  # This is fine for non-precipitation variables
-```
-
-**STEP 1: Check if I have complete information**
-Required: Location + Time Period + Variable
-- Missing any? → Ask user to specify
-- Have all? → Call execute_custom_code
-
-**STEP 2: Generate proper code based on precipitation terminology**
-- "total/precipitation/accumulated": `.sum(dim='time').sum()` (total volume)
-- "average precipitation": `.sum(dim='time').mean()` (spatial average)
-- Other variables: `.mean()`
-
-Available data: 2023 (daily), SPI: 2003-2023 (monthly)
-
-**Examples of asking for missing information:**
-- If missing time: "Please specify a time period for [variable] data. Available: [range]"
-- If missing location: "Please specify a location (state, city, or coordinates)"
-- If unclear variable: "Please clarify which weather variable you're interested in"
-
-**Only call execute_custom_code when you have ALL required information.**
-
-SPI/Drought Monthly Variables (use load_specific_month_spi_kerchunk):
-- Drought = 'SPI3' (3-month Standardized Precipitation Index)
-- SPI = 'SPI3' (values: <-1.5 severe drought, >1.5 very wet)
-
-IMPORTANT: SPI data uses different coordinate names:
-- Use 'latitude' and 'longitude' for SPI data (not 'lat' and 'lon')
-- Use data.longitude, data.latitude when creating maps from SPI data
-
-🚨 CRITICAL: SPI DATA IS MONTHLY ONLY - NO DAILY ANIMATIONS POSSIBLE
-
-COLOR CONSISTENCY RULE:
-- The TRANSPARENT overlay MUST use EXACTLY the same colormap AND data range (vmin/vmax) as the static map.
-- After creating the static map, do:
-    mappable = ax.collections[0] if ax.collections else None
-    if mappable:
-        vmin, vmax = mappable.get_clim()
-    else:
-        vmin, vmax = float(np.nanmin(data.values)), float(np.nanmax(data.values))
-- Then use these vmin, vmax in the overlay pcolormesh: ax2.pcolormesh(..., vmin=vmin, vmax=vmax, cmap=<same_cmap>)
-- Never recompute or expand the range for the overlay; no buffers.
-
-🚨 CRITICAL: CUSTOM COLORMAP FOR SPI/DROUGHT MAPS
-For ALL SPI and drought visualizations, use this EXACT custom colormap:
-```python
-import matplotlib.colors as mcolors
-from matplotlib.colors import LinearSegmentedColormap
-colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90','#00FF00','#00CED1','#0000FF','#00008B']
-cmap = LinearSegmentedColormap.from_list('spi_overlay', colors, N=256)
-```
-
-🚨 CRITICAL: For flash drought queries use this example for python coding using SPI:
+Example code template:
 ```python
 import builtins
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import numpy as np
 
-# Define Great Plains region coordinates
-lat_min, lat_max = 35.0, 49.0
-lon_min, lon_max = -104.0, -94.0
+# Detect region (use standard coordinates from Section 4)
+user_query_lower = user_request.lower()
+if 'great plains' in user_query_lower:
+    lat_min, lat_max = 35.0, 49.0
+    lon_min, lon_max = -104.0, -94.0
+    region_name = 'great_plains'
+elif 'southeast' in user_query_lower:
+    lat_min, lat_max = 24.0, 36.0
+    lon_min, lon_max = -90.0, -75.0
+    region_name = 'southeast'
+else:
+    result = "Please specify a region for flash drought analysis."
+    # STOP
 
-# Load SPI data for June and August 2012
-ds_june, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2012, 6)
-spi_june = ds_june['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
-if hasattr(spi_june, 'squeeze'):
-    spi_june = spi_june.squeeze()
+# Load two months
+ds_month1, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month1)
+spi_month1 = ds_month1['SPI3'].sel(
+    latitude=builtins.slice(lat_min, lat_max),
+    longitude=builtins.slice(lon_min, lon_max)
+)
+if hasattr(spi_month1, 'squeeze'):
+    spi_month1 = spi_month1.squeeze()
 
-ds_august, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2012, 8)
-spi_august = ds_august['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
-if hasattr(spi_august, 'squeeze'):
-    spi_august = spi_august.squeeze()
+ds_month2, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month2)
+spi_month2 = ds_month2['SPI3'].sel(
+    latitude=builtins.slice(lat_min, lat_max),
+    longitude=builtins.slice(lon_min, lon_max)
+)
+if hasattr(spi_month2, 'squeeze'):
+    spi_month2 = spi_month2.squeeze()
 
-# Calculate SPI difference
-delta_spi = spi_august - spi_june
-
-# Create flash drought detection mask
-flash_drought_mask = (spi_june >= 0.0) & (spi_august <= -1.5)
+# Calculate difference and mask
+delta_spi = spi_month2 - spi_month1
+flash_drought_mask = (spi_month1 >= 0.0) & (spi_month2 <= -1.5)
 flash_drought_percentage = (flash_drought_mask.sum().item() / flash_drought_mask.size) * 100
 
-# Create map visualizations
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-import numpy as np
-
-fig, ax = plt.subplots(1, 1, figsize=(12, 8), subplot_kw={'projection': ccrs.PlateCarree()})
-lon_grid, lat_grid = np.meshgrid(spi_august.longitude, spi_august.latitude)
+# Create map
+fig, ax = plt.subplots(1, 1, figsize=(12, 8), 
+                       subplot_kw={'projection': ccrs.PlateCarree()})
+lon_grid, lat_grid = np.meshgrid(spi_month2.longitude, spi_month2.latitude)
 
 # Plot SPI difference
-delta_vmin, delta_vmax = -2.5, 2.5
-cmap = "RdBu"
-img = ax.pcolormesh(lon_grid, lat_grid, delta_spi.values, cmap=cmap, vmin=delta_vmin, vmax=delta_vmax, shading="auto", transform=ccrs.PlateCarree())
+img = ax.pcolormesh(lon_grid, lat_grid, delta_spi.values, 
+                    cmap="RdBu", vmin=-2.5, vmax=2.5, 
+                    shading="auto", transform=ccrs.PlateCarree())
 
 # Overlay flash drought areas with hatching
-ax.contourf(lon_grid, lat_grid, flash_drought_mask.astype(float), levels=[0.5, 1.5], colors='none', hatches=['///'], transform=ccrs.PlateCarree())
+ax.contourf(lon_grid, lat_grid, flash_drought_mask.astype(float), 
+            levels=[0.5, 1.5], colors='none', hatches=['///'], 
+            transform=ccrs.PlateCarree())
 
-# Enhance map aesthetics
 ax.add_feature(cfeature.COASTLINE)
 ax.add_feature(cfeature.STATES)
-ax.set_title(f"Flash Drought Detection in Great Plains (June-August 2012)\\n{flash_drought_percentage:.1f}% of area affected")
-plt.colorbar(img, ax=ax, orientation='vertical', label='SPI Change (Aug - Jun)')
+ax.set_title(f"Flash Drought Detection: {region_name.title()}\\n"
+             f"{flash_drought_percentage:.1f}% of area affected")
+plt.colorbar(img, ax=ax, orientation='vertical', label='SPI Change')
 
-# Save map
-filename = "flash_drought_great_plains_jun_aug_2012.png"
-url = save_plot_to_blob_simple(fig, filename, account_key)
+url = save_plot_to_blob_simple(fig, f'flash_drought_{region_name}.png', account_key)
 plt.close(fig)
-ds_june.close()
-ds_august.close()
+ds_month1.close()
+ds_month2.close()
 
 result = {
     "static_url": url,
-    "overlay_url": url,  # Same for now
+    "overlay_url": url,
     "geojson": {"type": "FeatureCollection", "features": []},
-    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+    "bounds": {"north": lat_max, "south": lat_min, 
+               "east": lon_max, "west": lon_min},
+    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], 
+                   "zoom": 6, "style": "satellite", "overlay_mode": True}
 }
 ```
 
-🚨 CRITICAL: For drought recovery queries use this example for python coding using SPI:
+───────────────────────────────────────────────────────────────────────────
+DROUGHT RECOVERY ANALYSIS
+───────────────────────────────────────────────────────────────────────────
+
+Keywords: "drought recovery", "recovery from drought"
+
+Criteria: SPI went from ≤ -1.0 to ≥ -1.0 (drought → normal)
+
+Pattern: Similar to flash drought but different thresholds
 ```python
-import builtins
-
-# Define Southeast region coordinates
-lat_min, lat_max = 24.0, 36.0
-lon_min, lon_max = -90.0, -75.0
-
-# Load SPI data for December 2012 and December 2013
-ds_dec_2012, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2012, 12)
-spi_dec_2012 = ds_dec_2012['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
-if hasattr(spi_dec_2012, 'squeeze'):
-    spi_dec_2012 = spi_dec_2012.squeeze()
-
-ds_dec_2013, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2013, 12)
-spi_dec_2013 = ds_dec_2013['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
-if hasattr(spi_dec_2013, 'squeeze'):
-    spi_dec_2013 = spi_dec_2013.squeeze()
-
-# Calculate SPI difference
-delta_spi = spi_dec_2013 - spi_dec_2012
-
-# Create drought recovery detection mask
-drought_recovery_mask = (spi_dec_2012 <= -1.0) & (spi_dec_2013 >= -1.0)
-drought_recovery_percentage = (drought_recovery_mask.sum().item() / drought_recovery_mask.size) * 100
-
-# Create map visualizations
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-import numpy as np
-
-fig, ax = plt.subplots(1, 1, figsize=(12, 8), subplot_kw={'projection': ccrs.PlateCarree()})
-lon_grid, lat_grid = np.meshgrid(spi_dec_2013.longitude, spi_dec_2013.latitude)
-
-# Plot SPI difference
-delta_vmin, delta_vmax = -2.5, 2.5
-cmap = "RdBu"
-img = ax.pcolormesh(lon_grid, lat_grid, delta_spi.values, cmap=cmap, vmin=delta_vmin, vmax=delta_vmax, shading="auto", transform=ccrs.PlateCarree())
-
-# Overlay drought recovery areas with hatching
-ax.contourf(lon_grid, lat_grid, drought_recovery_mask.astype(float), levels=[0.5, 1.5], colors='none', hatches=['///'], transform=ccrs.PlateCarree())
-
-# Enhance map aesthetics
-ax.add_feature(cfeature.COASTLINE)
-ax.add_feature(cfeature.STATES)
-ax.set_title(f"Drought Recovery Assessment in Southeast US (Dec 2012 - Dec 2013)\\n{drought_recovery_percentage:.1f}% of area recovered from drought")
-plt.colorbar(img, ax=ax, orientation='vertical', label='SPI Change (2013 - 2012)')
-
-# Save map
-filename = "drought_recovery_southeast_dec2012_dec2013.png"
-url = save_plot_to_blob_simple(fig, filename, account_key)
-plt.close(fig)
-ds_dec_2012.close()
-ds_dec_2013.close()
-
-result = {
-    "static_url": url,
-    "overlay_url": url,  # Same for now
-    "geojson": {"type": "FeatureCollection", "features": []},
-    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
-}
+# Recovery mask
+drought_recovery_mask = (spi_period1 <= -1.0) & (spi_period2 >= -1.0)
+recovery_percentage = (drought_recovery_mask.sum().item() / 
+                      drought_recovery_mask.size) * 100
 ```
 
-🚨 CRITICAL: When user asks about "annual trends" or "trends", calculate the annual average and do not use a fixed month, use this python code:
+───────────────────────────────────────────────────────────────────────────
+TREND ANALYSIS (Multi-Year)
+───────────────────────────────────────────────────────────────────────────
+
+Keywords: "trend", "trends", "over time", "changing", "drying", "wetting"
+
+🚨 CRITICAL: For trends, calculate ANNUAL AVERAGE (all 12 months)
+DO NOT use a single month for trend analysis
+
+Pattern:
 ```python
-# Annual mean SPI (default)
+# Annual mean SPI
 monthly_means = []
 for m in range(1, 13):
     try:
@@ -575,603 +821,463 @@ for m in range(1, 13):
     except:
         continue
 
-spi_mean = np.nanmean(monthly_means) if monthly_means else None
+annual_spi_mean = np.nanmean(monthly_means) if monthly_means else None
 ```
 
-FOR DROUGHT/SPI QUERIES - copy this pattern:
+═══════════════════════════════════════════════════════════════════════════
+SECTION 8: CODE EXAMPLES BY QUERY TYPE
+═══════════════════════════════════════════════════════════════════════════
+
+───────────────────────────────────────────────────────────────────────────
+EXAMPLE 1: SINGLE TEMPERATURE MAP
+───────────────────────────────────────────────────────────────────────────
+
+Query: "Show me temperature in Florida on August 16, 2023"
 ```python
 import builtins
-# Extract location from user request dynamically
-user_query_lower = user_request.lower()
-
-# Dynamic coordinate detection based on user query
-if 'maryland' in user_query_lower:
-    lat_min, lat_max = 38.8, 39.8
-    lon_min, lon_max = -79.5, -75.0
-    region_name = 'Maryland'
-elif 'florida' in user_query_lower:
-    lat_min, lat_max = 24.5, 31.0
-    lon_min, lon_max = -87.6, -80.0
-    region_name = 'Florida'
-elif 'california' in user_query_lower:
-    lat_min, lat_max = 32.5, 42.0
-    lon_min, lon_max = -124.4, -114.1
-    region_name = 'California'
-elif 'texas' in user_query_lower:
-    lat_min, lat_max = 25.8, 36.5
-    lon_min, lon_max = -106.6, -93.5
-    region_name = 'Texas'
-elif 'mexico' in user_query_lower:
-    lat_min, lat_max = 14.5, 32.7
-    lon_min, lon_max = -118.4, -86.7
-    region_name = 'Mexico'
-else:
-    # Default to Maryland if no region detected
-    lat_min, lat_max = 38.8, 39.8
-    lon_min, lon_max = -79.5, -75.0
-    region_name = 'Maryland'
-
-# Extract year and month from user request
-import re
-
-# Trend detection FIRST
-trend_keywords = ['trend', 'trends', 'over time', 'change', 'changing',
-                  'drying', 'wetting', 'getting', 'multi-year']
-is_trend_query = any(word in user_request.lower() for word in trend_keywords)
-
-# Month detection ONLY IF NOT a trend
-month = None
-if not is_trend_query:
-    month_match = re.search(
-        r'(january|february|march|april|may|june|july|august|september|october|november|december)',
-        user_request.lower()
-    )
-    if month_match:
-        month_names = ['january','february','march','april','may','june',
-                       'july','august','september','october','november','december']
-        month = month_names.index(month_match.group(1)) + 1
-
-# Year detection
-year_match = re.search(r'(20\d{2})', user_request)
-year = int(year_match.group(1)) if year_match else 2020
-
-# FINAL behavior selection
-if is_trend_query:
-    # ALWAYS run annual trend code
-    month = None  # Force annual-only
-    # Use trend analysis pattern
-else:
-    if month is None:
-        # User wants a single-year annual map - calculate annual average
-        month = None
-    else:
-        # Single month map
-        ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
-        data = ds['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
-        if hasattr(data, 'squeeze'):
-            data = data.squeeze()
-
-# FIXED: For TEXT queries (what is, average, how much, tell me) - NOT show me
-if any(phrase in user_request.lower() for phrase in ['what is', 'average', 'how much', 'tell me']):
-    spi_value = float(data.mean())
-    ds.close()
-    
-    if spi_value <= -2.0:
-        condition = "extreme drought"
-    elif spi_value <= -1.5:
-        condition = "severe drought"
-    elif spi_value <= -1.0:
-        condition = "moderate drought"
-    elif spi_value <= -0.5:
-        condition = "mild drought"
-    elif spi_value <= 0.5:
-        condition = "near normal"
-    elif spi_value <= 1.0:
-        condition = "mild wet"
-    elif spi_value <= 1.5:
-        condition = "moderate wet"
-    elif spi_value <= 2.0:
-        condition = "severe wet"
-    else:
-        condition = "extreme wet"
-    
-    result = f"The SPI in {region_name} for {month_names[month-1].title()} {year} is {spi_value:.2f} ({condition})"
-
-# FIXED: For MAP queries (show me, display, visualize) - return map
-else:
-    # CRITICAL: Create custom SPI colormap
-    import matplotlib.colors as mcolors
-    from matplotlib.colors import LinearSegmentedColormap
-    colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90','#00FF00','#00CED1','#0000FF','#00008B']
-    spi_cmap = LinearSegmentedColormap.from_list('spi_custom', colors, N=256)
-    
-    title = f"Standardized Precipitation Index (SPI) — {month_names[month-1].title()} {year}, {region_name}"
-    fig, ax = create_spi_map_with_categories(data.longitude, data.latitude, data.values, title, region_name=region_name.lower())
-    url = save_plot_to_blob_simple(fig, f'{region_name.lower()}_spi_{year}_{month:02d}.png', account_key)
-    plt.close(fig)
-    ds.close()
-    result = {
-    "static_url": url,
-    "overlay_url": url,  # Same for now
-    "geojson": {"type": "FeatureCollection", "features": []},
-    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
-}
-```
-
-FOR SPI MULTI-YEAR ANIMATION (show drought trends over time):
-```python
-import builtins
-# Create SPI animation showing May conditions from 2010-2020 in California
-lat_min, lat_max = 32.0, 42.0  # California
-lon_min, lon_max = -125.0, -114.0
-
-try:
-    anim, fig = create_spi_multi_year_animation(2010, 2020, 5, lat_min, lat_max, lon_min, lon_max, 'California')
-    url = save_animation_to_blob(anim, 'california_may_spi_2010_2020.gif', account_key)
-    plt.close(fig)
-    result = {
-    "static_url": url,
-    "overlay_url": url,  # Same for now
-    "geojson": {"type": "FeatureCollection", "features": []},
-    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
-}
-    
-except Exception as e:
-    print(f"SPI animation failed: {e}")
-    # Fallback to single year SPI map
-    ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2020, 5)
-    data = ds['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
-    if hasattr(data, 'squeeze'):
-        data = data.squeeze()
-    fig, ax = create_spi_map_with_categories(data.longitude, data.latitude, data.values, 'California SPI - May 2020', region_name='california')
-    url = save_plot_to_blob_simple(fig, 'california_may_2020_spi.png', account_key)
-    plt.close(fig)
-    ds.close()
-    esult = {
-    "static_url": url,
-    "overlay_url": url,
-    "geojson": {"type": "FeatureCollection", "features": []},
-    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
-}
-```
-
-FOR SPI MONTHLY COMPARISON (instead of animation):
-```python
-import builtins
-# Compare SPI between two months - Florida May vs June 2023
-lat_min, lat_max = 24.5, 31.0  # Florida
-lon_min, lon_max = -87.6, -80.0
-
-# Load May 2023 SPI
-ds_may, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2023, 5)
-may_data = ds_may['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
-if hasattr(may_data, 'squeeze'):
-    may_data = may_data.squeeze()
-
-# Load June 2023 SPI  
-ds_june, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2023, 6)
-june_data = ds_june['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
-if hasattr(june_data, 'squeeze'):
-    june_data = june_data.squeeze()
-
-# Create subplot comparison with increased height for note
-fig = plt.figure(figsize=(20, 12))
-ax1 = fig.add_subplot(1, 2, 1, projection=ccrs.PlateCarree())
-ax2 = fig.add_subplot(1, 2, 2, projection=ccrs.PlateCarree())
-
-# CRITICAL: Create custom SPI colormap first
-import matplotlib.colors as mcolors
-from matplotlib.colors import LinearSegmentedColormap
-colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90','#00FF00','#00CED1','#0000FF','#00008B']
-spi_cmap = LinearSegmentedColormap.from_list('spi_custom', colors, N=256)
-
-# Both use same SPI scale (-2.5 to 2.5) with CUSTOM colormap
-im1 = ax1.pcolormesh(may_data.longitude, may_data.latitude, may_data.values, cmap=spi_cmap, vmin=-2.5, vmax=2.5, shading='auto', transform=ccrs.PlateCarree())
-ax1.add_feature(cfeature.COASTLINE)
-ax1.add_feature(cfeature.STATES)
-ax1.set_title('Florida SPI - May 2023')
-
-im2 = ax2.pcolormesh(june_data.longitude, june_data.latitude, june_data.values, cmap=spi_cmap, vmin=-2.5, vmax=2.5, shading='auto', transform=ccrs.PlateCarree())
-ax2.add_feature(cfeature.COASTLINE)
-ax2.add_feature(cfeature.STATES)  
-ax2.set_title('Florida SPI - June 2023')
-
-plt.subplots_adjust(left=0.05, right=0.85, wspace=0.1, bottom=0.12)
-cbar = plt.colorbar(im2, ax=[ax1, ax2], shrink=0.8, pad=0.02, label='SPI3 (Drought Index)')
-
-# NEW: Add SPI category explanation at bottom of subplot
-note_text = ("SPI Categories: Extreme Drought (≤ -2.0, Red) • Severe Drought (-2.0 to -1.5) • " +
-           "Moderate Drought (-1.5 to -1.0) • Mild Drought (-1.0 to -0.5) • " +
-           "Near Normal (-0.5 to 0.5, White) • Mild Wet (0.5 to 1.0) • " +
-           "Moderate Wet (1.0 to 1.5) • Severe Wet (1.5 to 2.0) • Extreme Wet (≥ 2.0, Blue)")
-
-fig.text(0.5, 0.02, note_text, ha='center', va='bottom', fontsize=16, 
-        fontweight='bold', wrap=True, bbox=dict(boxstyle='round,pad=0.5', 
-        facecolor='lightgray', alpha=0.8))
-
-url = save_plot_to_blob_simple(fig, 'florida_spi_may_june_2023.png', account_key)
-plt.close(fig)
-ds_may.close()
-ds_june.close()
-result = {
-    "static_url": url,
-    "overlay_url": url,  # Same for now
-    "geojson": {"type": "FeatureCollection", "features": []},
-    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
-}
-```
-
-FOR TIME SERIES PLOTS - copy this pattern:
-```python
-import builtins
+import json
+import numpy as np
 import matplotlib.pyplot as plt
-import pandas as pd
 
-# Example coordinates (replace with requested region)
-lat_min, lat_max = 24.5, 31.0  # Example: Florida
-lon_min, lon_max = -87.6, -80.0
-
-# Load multiple days and calculate statistics
-dates = []
-avg_temps = []
-min_temps = []
-max_temps = []
-
-for day in range(1, 11):  # Feb 1-10
-    try:
-        ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 2, day)
-        temp_data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)) - 273.15
-        
-        # Calculate daily statistics
-        daily_avg = float(temp_data.mean())
-        daily_min = float(temp_data.min()) 
-        daily_max = float(temp_data.max())
-        
-        dates.append(f"2023-02-{day:02d}")
-        avg_temps.append(daily_avg)
-        min_temps.append(daily_min)
-        max_temps.append(daily_max)
-        
-        ds.close()
-    except Exception as e:
-        print(f"Error loading day {day}: {e}")
-        continue
-
-# Create time series plot with proper formatting
-plt.figure(figsize=(12, 6))
-plt.plot(dates, avg_temps, 'o-', label='Average Temperature (°C)', linewidth=2, markersize=6)
-plt.plot(dates, min_temps, 's-', label='Minimum Temperature (°C)', linewidth=2, markersize=6)
-plt.plot(dates, max_temps, '^-', label='Maximum Temperature (°C)', linewidth=2, markersize=6)
-
-plt.title('Temperature Time Series: Feb 1-10, 2023', fontsize=14, fontweight='bold')
-plt.xlabel('Date', fontsize=12)
-plt.ylabel('Temperature (°C)', fontsize=12)
-plt.legend(fontsize=11)
-plt.grid(True, alpha=0.3)
-
-# CRITICAL: Apply proper x-axis formatting
-plt.xticks(rotation=45)
-plt.tight_layout()
-
-url = save_plot_to_blob_simple(plt.gcf(), 'temp_timeseries.png', account_key)
-plt.close()
-result = url
-```
-
-FOR SUBPLOT REQUESTS (multiple variables or dates) - copy this pattern:
-```python
-import builtins
-# Load data for BOTH regions first to calculate shared color scale
-ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 3, 15)  # March 15, 2023
-
-# Florida data
-florida_data = ds['Tair'].sel(lat=builtins.slice(24.5, 31.0), lon=builtins.slice(-87.6, -80.0)).mean(dim='time') - 273.15
-
-# Maryland data  
-maryland_data = ds['Tair'].sel(lat=builtins.slice(37.9, 39.7), lon=builtins.slice(-79.5, -75.0)).mean(dim='time') - 273.15
-
-# CRITICAL: Calculate shared color scale from BOTH datasets
-shared_vmin = float(min(florida_data.min(), maryland_data.min()))
-shared_vmax = float(max(florida_data.max(), maryland_data.max()))
-
-fig = plt.figure(figsize=(20, 8))
-ax1 = fig.add_subplot(1, 2, 1, projection=ccrs.PlateCarree())
-ax2 = fig.add_subplot(1, 2, 2, projection=ccrs.PlateCarree())
-
-for ax in [ax1, ax2]:
-    ax.add_feature(cfeature.COASTLINE)
-    ax.add_feature(cfeature.STATES)
-    ax.set_xticks([])
-    ax.set_yticks([])
-
-# BOTH plots use the SAME shared color scale
-im1 = ax1.pcolormesh(florida_data.lon, florida_data.lat, florida_data.values, cmap='RdYlBu_r', vmin=shared_vmin, vmax=shared_vmax, shading='auto', transform=ccrs.PlateCarree())
-ax1.set_title('Florida Average Temperature')
-
-im2 = ax2.pcolormesh(maryland_data.lon, maryland_data.lat, maryland_data.values, cmap='RdYlBu_r', vmin=shared_vmin, vmax=shared_vmax, shading='auto', transform=ccrs.PlateCarree())
-ax2.set_title('Maryland Average Temperature')
-
-plt.subplots_adjust(left=0.05, right=0.85, wspace=0.1)
-# Single shared colorbar for both plots
-cbar = plt.colorbar(im2, ax=[ax1, ax2], shrink=0.8, pad=0.02, label='Temperature (°C)')
-url = save_plot_to_blob_simple(fig, 'subplot_florida_maryland_temp.png', account_key)
-plt.close(fig)
-ds.close()
-result = {
-    "static_url": url,
-    "overlay_url": url,  # Same for now
-    "geojson": {"type": "FeatureCollection", "features": []},
-    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
-}
-```
-
-FOR SINGLE PRECIPITATION MAPS - copy this pattern:
-```python
-import builtins
-# Use coordinates for requested region
-lat_min, lat_max = 24.5, 31.0  # Example: Florida
-lon_min, lon_max = -87.6, -80.0
-ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 21)
-data = ds['Rainf'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).sum(dim='time')
-fig, ax = create_cartopy_map(data.lon, data.lat, data.values, 'Precipitation', 'Precipitation (mm)', 'Blues')
-mappable = ax.collections[0] if ax.collections else None
-if mappable:
-    vmin, vmax = mappable.get_clim()
-else:
-    vmin, vmax = float(np.nanmin(data.values)), float(np.nanmax(data.values))
-static_url = save_plot_to_blob_simple(fig, 'precip_static.png', account_key)
-# Transparent overlay
-fig2 = plt.figure(figsize=(10,8), frameon=False, dpi=200)
-fig2.patch.set_alpha(0)
-ax2 = fig2.add_axes([0,0,1,1]); ax2.set_axis_off(); ax2.set_facecolor('none')
-ax2.set_xlim(lon_min, lon_max); ax2.set_ylim(lat_min, lat_max)
-lon_grid, lat_grid = np.meshgrid(data.lon, data.lat)
-masked = np.ma.masked_invalid(data.values)
-ax2.pcolormesh(lon_grid, lat_grid, masked, cmap='Blues', shading='auto', alpha=0.9, vmin=vmin, vmax=vmax)
-overlay_url = save_plot_to_blob_simple(fig2, 'precip_overlay.png', account_key)
-# Build lightweight GeoJSON sample (every 4th point)
-geo_features = []
-lon_vals = data.lon.values
-lat_vals = data.lat.values
-vals = data.values
-for i in range(0, len(lat_vals), max(1, len(lat_vals)//25 or 1)):
-    for j in range(0, len(lon_vals), max(1, len(lon_vals)//25 or 1)):
-        v = float(vals[i, j])
-        if np.isfinite(v):
-            geo_features.append({
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [float(lon_vals[j]), float(lat_vals[i])]},
-                "properties": {"value": v, "variable": "precipitation", "unit": "mm"}
-            })
-geojson = {"type": "FeatureCollection", "features": geo_features}
-center_lon = float((lon_min + lon_max)/2)
-center_lat = float((lat_min + lat_max)/2)
-bounds = {"north": float(lat_max), "south": float(lat_min), "east": float(lon_max), "west": float(lon_min)}
-map_config = {"center": [center_lon, center_lat], "zoom": 6, "style": "satellite", "overlay_mode": True}
-plt.close(fig); plt.close(fig2); ds.close()
-result = {
-    "static_url": static_url,
-    "overlay_url": overlay_url,
-    "geojson": geojson,
-    "bounds": bounds,
-    "map_config": map_config,
-    "metadata": {
-        "variable": "Rainf",
-        "date": "2023-01-21",
-        "year": 2023,
-        "month": 1,
-        "day": 21,
-        "region": "florida",
-        "computation_type": "raw",
-        "color_scale": {"vmin": float(vmin), "vmax": float(vmax), "cmap": "Blues"}
-    }
-}
-```
-
-FOR SINGLE TEMPERATURE MAPS - copy this pattern (NOW WITH static_url + overlay_url):
-```python
-import builtins, json, numpy as np
+# Region coordinates
 lat_min, lat_max = 24.5, 31.0
 lon_min, lon_max = -87.6, -80.0
-ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 15)
-data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).mean(dim='time') - 273.15
+region_name = 'florida'
 
-# STATIC FIG (with title/colorbar)
-fig, ax = create_cartopy_map(data.lon, data.lat, data.values,
-                             'Temperature', 'Temperature (°C)', 'RdYlBu_r')
+# Load data
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 8, 16)
+data = ds['Tair'].sel(
+    lat=builtins.slice(lat_min, lat_max),
+    lon=builtins.slice(lon_min, lon_max)
+).mean(dim='time') - 273.15  # Convert K to C
+
+# Create static map
+fig, ax = create_cartopy_map(
+    data.lon, data.lat, data.values,
+    'Florida Temperature - August 16, 2023',
+    'Temperature (°C)',
+    'RdYlBu_r'
+)
+
+# Get color limits
 mappable = ax.collections[0] if ax.collections else None
 if mappable:
     vmin, vmax = mappable.get_clim()
 else:
     vmin, vmax = float(np.nanmin(data.values)), float(np.nanmax(data.values))
-static_url = save_plot_to_blob_simple(fig, 'temp_static.png', account_key)
 
-# TRANSPARENT OVERLAY FIG (no axes / no colorbar) for Azure Maps
-import matplotlib.pyplot as plt
+static_url = save_plot_to_blob_simple(fig, 'florida_temp.png', account_key)
+
+# Create transparent overlay
 fig2 = plt.figure(figsize=(10, 8), frameon=False, dpi=200)
 fig2.patch.set_alpha(0)
-ax2 = fig2.add_axes([0,0,1,1])
+ax2 = fig2.add_axes([0, 0, 1, 1])
 ax2.set_axis_off()
 ax2.set_facecolor('none')
 ax2.set_xlim(lon_min, lon_max)
 ax2.set_ylim(lat_min, lat_max)
-from matplotlib import cm
+
 lon_grid, lat_grid = np.meshgrid(data.lon, data.lat)
 masked = np.ma.masked_invalid(data.values)
-ax2.pcolormesh(lon_grid, lat_grid, masked, cmap='RdYlBu_r', shading='auto', alpha=0.9, vmin=vmin, vmax=vmax)
-overlay_url = save_plot_to_blob_simple(fig2, 'temp_overlay.png', account_key)
+ax2.pcolormesh(lon_grid, lat_grid, masked, 
+               cmap='RdYlBu_r', vmin=vmin, vmax=vmax,
+               shading='auto', alpha=0.9)
 
-# GEOJSON SAMPLE
+overlay_url = save_plot_to_blob_simple(fig2, 'florida_temp_overlay.png', account_key)
+
+# Build GeoJSON
 geo_features = []
-lon_vals = data.lon.values
-lat_vals = data.lat.values
-vals = data.values
-for i in range(0, len(lat_vals), max(1, len(lat_vals)//25 or 1)):
-    for j in range(0, len(lon_vals), max(1, len(lon_vals)//25 or 1)):
-        v = float(vals[i, j])
+for i in range(0, len(data.lat.values), max(1, len(data.lat.values)//25)):
+    for j in range(0, len(data.lon.values), max(1, len(data.lon.values)//25)):
+        v = float(data.values[i, j])
         if np.isfinite(v):
             geo_features.append({
                 "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [float(lon_vals[j]), float(lat_vals[i])]},
-                "properties": {"value": v, "variable": "temperature", "unit": "°C"}
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [float(data.lon.values[j]), float(data.lat.values[i])]
+                },
+                "properties": {
+                    "value": v,
+                    "variable": "temperature",
+                    "unit": "°C"
+                }
             })
-geojson = {"type": "FeatureCollection", "features": geo_features}
-center_lon = float((lon_min + lon_max)/2)
-center_lat = float((lat_min + lat_max)/2)
-bounds = {"north": float(lat_max), "south": float(lat_min), "east": float(lon_max), "west": float(lon_min)}
-map_config = {"center": [center_lon, center_lat], "zoom": 6, "style": "satellite", "overlay_mode": True}
 
-plt.close(fig); plt.close(fig2); ds.close()
+geojson = {"type": "FeatureCollection", "features": geo_features}
+
+# Cleanup
+plt.close(fig)
+plt.close(fig2)
+ds.close()
+
+# Return result
 result = {
     "static_url": static_url,
     "overlay_url": overlay_url,
     "geojson": geojson,
-    "bounds": bounds,
-    "map_config": map_config,
+    "bounds": {
+        "north": float(lat_max),
+        "south": float(lat_min),
+        "east": float(lon_max),
+        "west": float(lon_min)
+    },
+    "map_config": {
+        "center": [float((lon_min+lon_max)/2), float((lat_min+lat_max)/2)],
+        "zoom": 6,
+        "style": "satellite",
+        "overlay_mode": True
+    },
     "metadata": {
         "variable": "Tair",
-        "date": "2023-01-15",
+        "date": "2023-08-16",
         "year": 2023,
-        "month": 1,
-        "day": 15,
-        "region": "florida",
+        "month": 8,
+        "day": 16,
+        "region": region_name,
         "computation_type": "raw",
-        "color_scale": {"vmin": float(vmin), "vmax": float(vmax), "cmap": "RdYlBu_r"}
+        "color_scale": {
+            "vmin": float(vmin),
+            "vmax": float(vmax),
+            "cmap": "RdYlBu_r"
+        }
     }
 }
 ```
 
-FOR ANIMATIONS - copy this pattern:
+───────────────────────────────────────────────────────────────────────────
+EXAMPLE 2: SINGLE PRECIPITATION MAP (TOTAL)
+───────────────────────────────────────────────────────────────────────────
+
+Query: "Show me precipitation in Texas on July 4, 2023"
 ```python
 import builtins
-import matplotlib.animation as animation
+import numpy as np
+import matplotlib.pyplot as plt
 
-# Set coordinates
-lat_min, lat_max = 37.9, 39.7
-lon_min, lon_max = -79.5, -75.0
+# Region
+lat_min, lat_max = 25.8, 36.5
+lon_min, lon_max = -106.6, -93.5
+region_name = 'texas'
 
-try:
-    anim, fig = create_multi_day_animation(2023, 1, 1, 5, 'Tair', lat_min, lat_max, lon_min, lon_max, 'Region')
-    url = save_animation_to_blob(anim, 'temp_jan1-5.gif', account_key)
-    plt.close(fig)
-    result = {
-    "static_url": url,
-    "overlay_url": url,  # Same for now
-    "geojson": {"type": "FeatureCollection", "features": []},
-    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
-}
-    
-except Exception as e:
-    print(f"Animation failed: {e}")
-    ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 1, 3)
-    data = ds['Tair'].sel(lat=builtins.slice(lat_min, lat_max), lon=builtins.slice(lon_min, lon_max)).mean(dim='time') - 273.15
-    fig, ax = create_cartopy_map(data.lon, data.lat, data.values, 'Temperature', 'Temperature (°C)', 'RdYlBu_r')
-    url = save_plot_to_blob_simple(fig, 'temp_fallback.png', account_key)
-    plt.close(fig)
-    ds.close()
-    result = f"Animation failed, showing static map: {url}"
-```
+# Load data
+ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, 2023, 7, 4)
 
-FOR SPI MAPS (DUAL OUTPUT):
-```python
-import builtins, json, numpy as np
-lat_min, lat_max = 32.0, 42.0
-lon_min, lon_max = -125.0, -114.0
-ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2020, 5)
-data = ds['SPI3'].sel(latitude=builtins.slice(lat_min, lat_max), longitude=builtins.slice(lon_min, lon_max))
-if hasattr(data, 'squeeze'): data = data.squeeze()
-fig, ax = create_spi_map_with_categories(data.longitude, data.latitude, data.values,
-                                         'California SPI - May 2020', region_name='california')
-# SPI map helper likely fixed scale (-2.5,2.5); capture anyway
+# TOTAL precipitation (sum over time AND space is in metadata, but map shows per-grid)
+data = ds['Rainf'].sel(
+    lat=builtins.slice(lat_min, lat_max),
+    lon=builtins.slice(lon_min, lon_max)
+).sum(dim='time')  # Sum 24 hourly values → daily total per grid cell
+
+# Create static map
+fig, ax = create_cartopy_map(
+    data.lon, data.lat, data.values,
+    'Texas Precipitation - July 4, 2023',
+    'Precipitation (mm)',
+    'Blues'
+)
+
 mappable = ax.collections[0] if ax.collections else None
 if mappable:
     vmin, vmax = mappable.get_clim()
 else:
-    vmin, vmax = -2.5, 2.5
-static_url = save_plot_to_blob_simple(fig, 'spi_static.png', account_key)
+    vmin, vmax = float(np.nanmin(data.values)), float(np.nanmax(data.values))
 
-# Transparent overlay (no axes)
-fig2 = plt.figure(figsize=(10,8), frameon=False, dpi=200)
+static_url = save_plot_to_blob_simple(fig, 'texas_precip.png', account_key)
+
+# Transparent overlay
+fig2 = plt.figure(figsize=(10, 8), frameon=False, dpi=200)
 fig2.patch.set_alpha(0)
-ax2 = fig2.add_axes([0,0,1,1]); ax2.set_axis_off(); ax2.set_facecolor('none')
-ax2.set_xlim(lon_min, lon_max); ax2.set_ylim(lat_min, lat_max)
-lon_grid, lat_grid = np.meshgrid(data.longitude, data.latitude)
-masked = np.ma.masked_invalid(data.values)
-import matplotlib.colors as mcolors
-from matplotlib.colors import LinearSegmentedColormap
-colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90','#00FF00','#00CED1','#0000FF','#00008B']
-cmap = LinearSegmentedColormap.from_list('spi_overlay', colors, N=256)
-ax2.pcolormesh(lon_grid, lat_grid, masked, cmap=cmap, vmin=vmin, vmax=vmax, shading='auto', alpha=0.9)
-overlay_url = save_plot_to_blob_simple(fig2, 'spi_overlay.png', account_key)
+ax2 = fig2.add_axes([0, 0, 1, 1])
+ax2.set_axis_off()
+ax2.set_facecolor('none')
+ax2.set_xlim(lon_min, lon_max)
+ax2.set_ylim(lat_min, lat_max)
 
-# GEOJSON SAMPLE
+lon_grid, lat_grid = np.meshgrid(data.lon, data.lat)
+masked = np.ma.masked_invalid(data.values)
+ax2.pcolormesh(lon_grid, lat_grid, masked,
+               cmap='Blues', vmin=vmin, vmax=vmax,
+               shading='auto', alpha=0.9)
+
+overlay_url = save_plot_to_blob_simple(fig2, 'texas_precip_overlay.png', account_key)
+
+# GeoJSON
 geo_features = []
-lon_vals = data.longitude.values
-lat_vals = data.latitude.values
-vals = data.values
-for i in range(0, len(lat_vals), max(1, len(lat_vals)//25 or 1)):
-    for j in range(0, len(lon_vals), max(1, len(lon_vals)//25 or 1)):
-        v = float(vals[i, j])
+for i in range(0, len(data.lat.values), max(1, len(data.lat.values)//25)):
+    for j in range(0, len(data.lon.values), max(1, len(data.lon.values)//25)):
+        v = float(data.values[i, j])
         if np.isfinite(v):
             geo_features.append({
                 "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [float(lon_vals[j]), float(lat_vals[i])]},
-                "properties": {"spi": v}
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [float(data.lon.values[j]), float(data.lat.values[i])]
+                },
+                "properties": {
+                    "value": v,
+                    "variable": "precipitation",
+                    "unit": "mm"
+                }
             })
+
 geojson = {"type": "FeatureCollection", "features": geo_features}
-center_lon = float((lon_min + lon_max)/2)
-center_lat = float((lat_min + lat_max)/2)
-bounds = {"north": float(lat_max), "south": float(lat_min), "east": float(lon_max), "west": float(lon_min)}
-map_config = {"center": [center_lon, center_lat], "zoom": 5, "style": "satellite", "overlay_mode": True}
-plt.close(fig); plt.close(fig2); ds.close()
+
+plt.close(fig)
+plt.close(fig2)
+ds.close()
+
 result = {
     "static_url": static_url,
     "overlay_url": overlay_url,
     "geojson": geojson,
-    "bounds": bounds,
-    "map_config": map_config,
+    "bounds": {
+        "north": float(lat_max),
+        "south": float(lat_min),
+        "east": float(lon_max),
+        "west": float(lon_min)
+    },
+    "map_config": {
+        "center": [float((lon_min+lon_max)/2), float((lat_min+lat_max)/2)],
+        "zoom": 6,
+        "style": "satellite",
+        "overlay_mode": True
+    },
     "metadata": {
-        "variable": "SPI3",
-        "date": "2020-05",
-        "year": 2020,
-        "month": 5,
-        "day": None,  # SPI is monthly
-        "region": "california",
+        "variable": "Rainf",
+        "date": "2023-07-04",
+        "year": 2023,
+        "month": 7,
+        "day": 4,
+        "region": region_name,
         "computation_type": "raw",
-        "color_scale": {"vmin": float(vmin), "vmax": float(vmax), "cmap": "spi_overlay"}
+        "color_scale": {
+            "vmin": float(vmin),
+            "vmax": float(vmax),
+            "cmap": "Blues"
+        }
     }
 }
 ```
 
-RULE UPDATE (REPLACE PRIOR RULE):
-FOR ANY MAP RESULT you MUST return a dict with:
-- static_url (annotated figure with legend/colorbar)
-- overlay_url (transparent, no axes, georeferenced)
-- geojson
-- bounds (north,south,east,west)
-- map_config {center, zoom, style, overlay_mode}
-Never return only a single URL.
+───────────────────────────────────────────────────────────────────────────
+EXAMPLE 3: SINGLE SPI/DROUGHT MAP
+───────────────────────────────────────────────────────────────────────────
+
+Query: "Show me drought conditions in California for May 2019"
+```python
+import builtins
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+
+# Region
+lat_min, lat_max = 32.5, 42.0
+lon_min, lon_max = -124.4, -114.1
+region_name = 'california'
+
+# Load SPI data
+ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, 2019, 5)
+data = ds['SPI3'].sel(
+    latitude=builtins.slice(lat_min, lat_max),
+    longitude=builtins.slice(lon_min, lon_max)
+)
+if hasattr(data, 'squeeze'):
+    data = data.squeeze()
+
+# Create custom SPI colormap
+colors = [
+    '#8B0000', '#CD0000', '#FF0000', '#FF4500', '#FFA500', '#FFFF00',
+    '#90EE90', '#00FF00', '#00CED1', '#0000FF', '#00008B'
+]
+spi_cmap = LinearSegmentedColormap.from_list('spi_custom', colors, N=256)
+
+# Create static map
+fig, ax = plt.subplots(1, 1, figsize=(12, 8),
+                       subplot_kw={'projection': ccrs.PlateCarree()})
+
+lon_grid, lat_grid = np.meshgrid(data.longitude, data.latitude)
+
+img = ax.pcolormesh(lon_grid, lat_grid, data.values,
+                    cmap=spi_cmap, vmin=-2.5, vmax=2.5,
+                    shading='auto', transform=ccrs.PlateCarree())
+
+ax.add_feature(cfeature.COASTLINE)
+ax.add_feature(cfeature.STATES)
+ax.set_title('California Drought Conditions (SPI) - May 2019')
+
+plt.colorbar(img, ax=ax, orientation='vertical',
+             label='SPI3 (Standardized Precipitation Index)')
+
+static_url = save_plot_to_blob_simple(fig, 'california_spi_may2019.png', account_key)
+
+# Transparent overlay
+fig2 = plt.figure(figsize=(10, 8), frameon=False, dpi=200)
+fig2.patch.set_alpha(0)
+ax2 = fig2.add_axes([0, 0, 1, 1])
+ax2.set_axis_off()
+ax2.set_facecolor('none')
+ax2.set_xlim(lon_min, lon_max)
+ax2.set_ylim(lat_min, lat_max)
+
+masked = np.ma.masked_invalid(data.values)
+ax2.pcolormesh(lon_grid, lat_grid, masked,
+               cmap=spi_cmap, vmin=-2.5, vmax=2.5,
+               shading='auto', alpha=0.9)
+
+overlay_url = save_plot_to_blob_simple(fig2, 'california_spi_may2019_overlay.png', account_key)
+
+# GeoJSON
+geo_features = []
+for i in range(0, len(data.latitude.values), max(1, len(data.latitude.values)//25)):
+    for j in range(0, len(data.longitude.values), max(1, len(data.longitude.values)//25)):
+        v = float(data.values[i, j])
+        if np.isfinite(v):
+            geo_features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [float(data.longitude.values[j]), 
+                                   float(data.latitude.values[i])]
+                },
+                "properties": {
+                    "spi": v,
+                    "variable": "drought"
+                }
+            })
+
+geojson = {"type": "FeatureCollection", "features": geo_features}
+
+plt.close(fig)
+plt.close(fig2)
+ds.close()
+
+result = {
+    "static_url": static_url,
+    "overlay_url": overlay_url,
+    "geojson": geojson,
+    "bounds": {
+        "north": float(lat_max),
+        "south": float(lat_min),
+        "east": float(lon_max),
+        "west": float(lon_min)
+    },
+    "map_config": {
+        "center": [float((lon_min+lon_max)/2), float((lat_min+lat_max)/2)],
+        "zoom": 6,
+        "style": "satellite",
+        "overlay_mode": True
+    },
+    "metadata": {
+        "variable": "SPI3",
+        "date": "2019-05",
+        "year": 2019,
+        "month": 5,
+        "day": None,
+        "region": region_name,
+        "computation_type": "raw",
+        "color_scale": {
+            "vmin": -2.5,
+            "vmax": 2.5,
+            "cmap": "spi_custom"
+        }
+    }
+}
+```
+
+═══════════════════════════════════════════════════════════════════════════
+SECTION 9: CRITICAL REMINDERS & EXECUTION CHECKLIST
+═══════════════════════════════════════════════════════════════════════════
+
+🚨 BEFORE EXECUTING, VERIFY:
+
+MEMORY:
+□ Did I check for "MEMORY CONTEXT" vs "NEW USER"?
+□ If memory exists, did I extract parameters from "EXTRACTED PARAMETERS"?
+□ Am I using memory for queries with "same", "that", "this", etc.?
+□ Did I avoid saying "first conversation" when memory exists?
+
+PARAMETERS:
+□ Do I have all three: Variable, Region, Date?
+□ Is the variable name exact (Tair, Rainf, SPI3)?
+□ Are coordinates in correct range for region?
+□ Is date format correct (YYYY-MM-DD or YYYY-MM)?
+
+DATA HANDLING:
+□ For precipitation: Using .sum(dim='time') not .mean()?
+□ For temperature: Subtracting 273.15 for Celsius?
+□ For SPI: Using latitude/longitude (not lat/lon)?
+□ Am I using builtins.slice() for selections?
+
+VISUALIZATION:
+□ Created both static_url AND overlay_url?
+□ Is overlay using EXACT same vmin/vmax/cmap as static?
+□ Did I close all datasets (ds.close())?
+□ Did I close all figures (plt.close(fig))?
+
+RESULT FORMAT:
+□ Returning complete dict with all required keys?
+□ Included full metadata with variable/date/year/month/day/region?
+□ If computed data, called save_computed_data_to_blob?
+□ Set computation_type correctly?
+
+FUNCTIONS:
+□ Using only functions from Section 5?
+□ Not overriding ACCOUNT_NAME or account_key?
+□ Using ccrs.PlateCarree() object (not string)?
+
+═══════════════════════════════════════════════════════════════════════════
+FINAL EXECUTION RULE
+═══════════════════════════════════════════════════════════════════════════
+
+🚨 MANDATORY: Call execute_custom_code immediately when you have:
+1. Variable (confirmed from query or memory)
+2. Region (confirmed from query or memory)
+3. Date (confirmed from query or memory)
+
+DO NOT:
+❌ Ask for information that's in EXTRACTED PARAMETERS
+❌ Say "no previous context" when MEMORY CONTEXT is present
+❌ Ignore memory keywords ("same", "that", etc.)
+❌ Use functions not listed in Section 5
+❌ Return incomplete result dictionaries
+❌ Use .mean() for precipitation without .sum(dim='time') first
+
+DO:
+✅ Execute immediately when all parameters available
+✅ Use memory to fill missing parameters
+✅ Follow exact code patterns from Section 8
+✅ Return complete result dictionaries
+✅ Close all resources properly
+
+═══════════════════════════════════════════════════════════════════════════
+END OF INSTRUCTIONS
+═══════════════════════════════════════════════════════════════════════════
+
+You are now ready to process weather analysis queries with full memory awareness.
+Remember: MEMORY FIRST, then current query, then ask if still missing info.
 """
 
-# ---------- Create text agent ----------
+# ============================================================================
+# CREATE AGENTS
+# ============================================================================
+
+# Create text agent
 text_agent = proj.agents.create_agent(
     model=TEXT_MODEL,
-    name="nldas3-merged-agent-memory-flash-drought-trends",
+    name="nldas3-memory-optimized-agent-v3",
     instructions=instructions,
     tools=text_tools,
     tool_resources=text_tool_resources
 )
 
-# ---------- Create visualization agent ----------
+# Create visualization agent
 viz_agent = proj.agents.create_agent(
     model=VIZ_MODEL,
-    name="nldas3-visualization-agent",
+    name="nldas3-visualization-agent-v3",
     instructions=(
         "You produce image-ready prompts and visual specifications for NLDAS-3 figures. "
         "Create detailed prompts for map projections, color schemes, and data overlays."
@@ -1179,7 +1285,10 @@ viz_agent = proj.agents.create_agent(
     tools=[]
 )
 
-# ---------- Save agent info ----------
+# ============================================================================
+# SAVE AGENT INFO
+# ============================================================================
+
 tools_info = []
 if search_conn_id and AI_SEARCH_INDEX_NAME:
     tools_info.append({
@@ -1202,18 +1311,19 @@ agent_info = {
             "id": text_agent.id,
             "name": text_agent.name,
             "model": TEXT_MODEL,
+            "version": "3.0",
             "capabilities": [
-                "memory-aware-operation",
+                "enhanced-memory-awareness",
+                "structured-memory-detection",
+                "automatic-parameter-extraction",
                 "flash-drought-detection",
                 "drought-recovery-analysis",
-                "trend-analysis",
-                "speed-optimized",
+                "multi-year-trend-analysis",
+                "speed-optimized-regions",
                 "advanced-precipitation-handling",
-                "direct-code-execution",
-                "subplot-creation",
-                "proper-colorbar-scaling",
-                "map-generation",
-                "formatted-time-series"
+                "computed-data-storage",
+                "tile-generation-support",
+                "complete-result-formatting"
             ],
             "tools": tools_info
         },
@@ -1221,7 +1331,12 @@ agent_info = {
             "id": viz_agent.id,
             "name": viz_agent.name,
             "model": VIZ_MODEL,
-            "capabilities": ["image-spec-generation", "map-mockups", "figure-captions"],
+            "version": "3.0",
+            "capabilities": [
+                "image-spec-generation",
+                "map-mockups",
+                "figure-captions"
+            ],
             "tools": []
         }
     }
@@ -1230,17 +1345,35 @@ agent_info = {
 with open("agent_info.json", "w") as f:
     json.dump(agent_info, f, indent=2)
 
-print(f"✅ Created MERGED text agent: {text_agent.id}")
+# ============================================================================
+# PRINT SUCCESS MESSAGE
+# ============================================================================
+
+print(f"╔═══════════════════════════════════════════════════════════════╗")
+print(f"║           AGENT CREATION SUCCESSFUL - VERSION 3.0             ║")
+print(f"╚═══════════════════════════════════════════════════════════════╝")
+print()
+print(f"✅ Created text agent: {text_agent.id}")
+print(f"   Model: {TEXT_MODEL}")
+print(f"   Name: {text_agent.name}")
+print()
 print(f"✅ Created visualization agent: {viz_agent.id}")
-print("\n🎉 MERGED agent features:")
-print("  ✅ Memory-aware operation (from File 1)")
-print("  ✅ Flash drought detection (from File 2)")
-print("  ✅ Drought recovery analysis (from File 2)")
-print("  ✅ Trend analysis capabilities (from File 2)")
-print("  ✅ Speed optimization (from File 2)")
-print("  ✅ Advanced precipitation handling (from File 2)")
-print("  ✅ Proper colorbar scaling")
-print("  ✅ Shared color scales for comparisons")
-print("  ✅ Formatted time series with proper axes")
-print("  ✅ Custom SPI colormap")
-print("\n📄 Saved agent_info.json")
+print(f"   Model: {VIZ_MODEL}")
+print(f"   Name: {viz_agent.name}")
+print()
+print(f"🎉 ENHANCED FEATURES v3.0:")
+print(f"   ✅ Enhanced memory detection and usage")
+print(f"   ✅ Structured memory parameter extraction")
+print(f"   ✅ Never claims 'first conversation' when memory exists")
+print(f"   ✅ Automatic memory-based parameter filling")
+print(f"   ✅ Flash drought & recovery detection")
+print(f"   ✅ Multi-year trend analysis")
+print(f"   ✅ Speed-optimized regional boundaries")
+print(f"   ✅ Advanced precipitation handling")
+print(f"   ✅ Computed data storage for tiles")
+print(f"   ✅ Complete result formatting")
+print(f"   ✅ Color consistency across static & overlay")
+print()
+print(f"📄 Saved to: agent_info.json")
+print()
+print(f"🚀 Ready to process weather queries with full memory awareness!")
