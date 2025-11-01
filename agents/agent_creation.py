@@ -197,6 +197,43 @@ result = {
 }
 ```
 
+CRITICAL: ONLY use these exact function names (no others exist):
+- load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
+- load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
+- create_multi_day_animation(year, month, day, num_days, 'Tair', lat_min, lat_max, lon_min, lon_max, 'Region')
+- save_animation_to_blob(anim, filename, account_key)
+- save_plot_to_blob_simple(fig, filename, account_key)
+- save_computed_data_to_blob(data_array, lon_array, lat_array, metadata, account_key)
+- create_cartopy_map(lon, lat, data, title, colorbar_label, cmap)
+
+🚨 CRITICAL: DYNAMIC ZOOM CALCULATION
+NEVER hardcode zoom levels. ALWAYS calculate zoom dynamically based on region size:
+```python
+def calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max):
+    lat_span = lat_max - lat_min
+    lon_span = lon_max - lon_min
+    area = lat_span * lon_span
+    
+    # Area-based zoom selection
+    if area < 1: return 9      # Cities
+    elif area < 10: return 8   # Small states (Maryland)
+    elif area < 50: return 7   # Medium states (Florida)
+    elif area < 150: return 6  # Large states (California, Texas)
+    elif area < 500: return 5  # Huge states (Alaska)
+    elif area < 2000: return 4 # Multi-state regions
+    else: return 3             # Continental scale
+
+# ALWAYS use this function to calculate zoom:
+zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+map_config = {
+    "center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], 
+    "zoom": zoom,  # ✅ Dynamic zoom based on region size
+    "style": "satellite", 
+    "overlay_mode": True
+}
+```
+
+
 EXAMPLE: Precipitation Difference Query
 "Show me how precipitation in Colorado on Jan 20, 2023 differs from Jan 1-5, 2023"
 ```python
@@ -602,7 +639,9 @@ result = {
     "overlay_url": url,  # Same for now
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+    # Calculate zoom based on region size
+    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
 ```
 
@@ -667,7 +706,9 @@ result = {
     "overlay_url": url,  # Same for now
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+    # Calculate zoom based on region size
+    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
 ```
 
@@ -809,7 +850,9 @@ else:
     "overlay_url": url,  # Same for now
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+    # Calculate zoom based on region size
+    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
 ```
 
@@ -829,7 +872,9 @@ try:
     "overlay_url": url,  # Same for now
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+    # Calculate zoom based on region size
+    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
     
 except Exception as e:
@@ -848,7 +893,9 @@ except Exception as e:
     "overlay_url": url,
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+    # Calculate zoom based on region size
+    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
 ```
 
@@ -915,7 +962,9 @@ result = {
     "overlay_url": url,  # Same for now
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+    # Calculate zoom based on region size
+    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
 ```
 
@@ -1020,7 +1069,9 @@ result = {
     "overlay_url": url,  # Same for now
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+    # Calculate zoom based on region size
+    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
 ```
 
@@ -1178,7 +1229,9 @@ try:
     "overlay_url": url,  # Same for now
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    "map_config": {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": 6, "style": "satellite", "overlay_mode": True}
+    # Calculate zoom based on region size
+    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
     
 except Exception as e:

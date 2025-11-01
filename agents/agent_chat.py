@@ -152,7 +152,9 @@ def determine_optimal_zoom_level(bounds: dict) -> int:
 
 def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) -> dict:
     """
-    Create tile configuration
+    Create tile configuration with dynamically calculated color scales from actual data.
+    No hardcoded ranges - always derive from the dataset.
+    
     Args:
         map_data: Map result with bounds
         user_query: Original user query
@@ -194,6 +196,12 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
             variable = 'Rainf'
         elif any(word in user_query.lower() for word in ['drought', 'spi']):
             variable = 'SPI3'
+        elif any(word in user_query.lower() for word in ['wind']):
+            variable = 'Wind_Speed'
+        elif any(word in user_query.lower() for word in ['humidity', 'humid']):
+            variable = 'Qair'
+        elif any(word in user_query.lower() for word in ['pressure']):
+            variable = 'PSurf'
         
         # For daily variables, require day specification
         day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', user_query)
@@ -221,18 +229,22 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
     
     logging.info(f"🗺️ Creating tiles for: N={north:.2f}, S={south:.2f}, W={west:.2f}, E={east:.2f}")
 
-    # ✅ FIXED: Get the correct colormap for the variable
+    # ✅ Define colormap per variable (this is styling, not data-dependent)
     variable_cmaps = {
         'Tair': 'RdYlBu_r',
         'Rainf': 'Blues',
         'SPI3': 'RdBu',
         'Qair': 'BrBG',
         'PSurf': 'viridis',
-        'Wind_Speed': 'viridis'
+        'Wind_Speed': 'viridis',
+        'Wind_E': 'RdBu',
+        'Wind_N': 'RdBu',
+        'SWdown': 'YlOrRd',
+        'LWdown': 'YlOrRd'
     }
     cmap = variable_cmaps.get(variable, 'viridis')
 
-    # Calculate actual data range for this region
+    # ✅ DYNAMIC CALCULATION: Load actual data and calculate real min/max
     try:
         from .weather_tool import (
             load_specific_date_kerchunk,
@@ -243,60 +255,145 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
         
         account_key = get_account_key()
         
+        # Load the dataset
         if variable == 'SPI3':
             ds, _ = load_specific_month_spi_kerchunk(ACCOUNT_NAME, account_key, year, month)
             data = ds[variable].sel(
                 latitude=builtins.slice(south, north),
                 longitude=builtins.slice(west, east)
             )
-            region_vmin, region_vmax = -2.5, 2.5
-        else:
-            ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
-            data = ds[variable].sel(
-                lat=builtins.slice(south, north),
-                lon=builtins.slice(west, east)
-            )
-            
-            # Process the data
-            if variable == 'Tair':
-                data = data.mean(dim='time') - 273.15
-            elif variable == 'Rainf':
-                data = data.sum(dim='time')
-            else:
-                data = data.mean(dim='time')
-            
             if hasattr(data, 'squeeze'):
                 data = data.squeeze()
             
-            valid_data = data.values[np.isfinite(data.values)]
-            if len(valid_data) > 0:
-                region_vmin, region_vmax = np.percentile(valid_data, [2, 98])
+        else:
+            ds, _ = load_specific_date_kerchunk(ACCOUNT_NAME, account_key, year, month, day)
+            
+            # ✅ SPECIAL HANDLING FOR WIND_SPEED - Calculate magnitude from components
+            if variable == 'Wind_Speed':
+                logging.info("🌬️ Calculating wind speed from Wind_E and Wind_N components")
+                wind_e = ds['Wind_E'].sel(
+                    lat=builtins.slice(south, north),
+                    lon=builtins.slice(west, east)
+                ).mean(dim='time')
+                wind_n = ds['Wind_N'].sel(
+                    lat=builtins.slice(south, north),
+                    lon=builtins.slice(west, east)
+                ).mean(dim='time')
+                data = np.sqrt(wind_e**2 + wind_n**2)
                 
-                if abs(region_vmax - region_vmin) < 0.1:
-                    center = (region_vmin + region_vmax) / 2
-                    region_vmin = center - 1.0
-                    region_vmax = center + 1.0
+                if hasattr(data, 'squeeze'):
+                    data = data.squeeze()
+                    
             else:
+                # Load regular variable
+                data = ds[variable].sel(
+                    lat=builtins.slice(south, north),
+                    lon=builtins.slice(west, east)
+                )
+                
+                # Process based on variable type
                 if variable == 'Tair':
-                    region_vmin, region_vmax = -10, 30
+                    logging.info("🌡️ Converting temperature from Kelvin to Celsius")
+                    data = data.mean(dim='time') - 273.15
                 elif variable == 'Rainf':
-                    region_vmin, region_vmax = 0, 50
+                    logging.info("🌧️ Summing precipitation over time")
+                    data = data.sum(dim='time')
                 else:
-                    region_vmin, region_vmax = 0, 100
+                    data = data.mean(dim='time')
+                
+                if hasattr(data, 'squeeze'):
+                    data = data.squeeze()
+        
+        # ✅ CALCULATE ACTUAL DATA RANGE
+        valid_data = data.values[np.isfinite(data.values)]
+        
+        if len(valid_data) == 0:
+            ds.close()
+            logging.error(f"❌ No valid data points found in region for {variable}")
+            return {"error": f"No valid data in selected region for {variable}"}
+        
+        # Use percentiles to avoid outliers (2nd and 98th percentile)
+        data_vmin = float(np.percentile(valid_data, 2))
+        data_vmax = float(np.percentile(valid_data, 98))
+        
+        logging.info(f"📊 Raw data range (P2-P98): {data_vmin:.6f} to {data_vmax:.6f}")
+        
+        # ✅ HANDLE EDGE CASE: Very small range (nearly constant data)
+        data_range = data_vmax - data_vmin
+        
+        if data_range < 1e-8:  # Essentially zero variance
+            logging.warning(f"⚠️ Nearly constant data detected: range = {data_range:.10f}")
+            
+            data_mean = float(np.mean(valid_data))
+            data_std = float(np.std(valid_data))
+            
+            if data_std < 1e-10:  # Truly constant
+                # Create small symmetric range around value for visualization
+                epsilon = max(abs(data_mean) * 0.01, 0.1)  # 1% of value or 0.1 minimum
+                data_vmin = data_mean - epsilon
+                data_vmax = data_mean + epsilon
+                logging.info(f"📌 Constant data - expanded range: {data_vmin:.6f} to {data_vmax:.6f}")
+            else:
+                # Use ±3 standard deviations
+                data_vmin = data_mean - 3 * data_std
+                data_vmax = data_mean + 3 * data_std
+                logging.info(f"📌 Low variance - using ±3σ: {data_vmin:.6f} to {data_vmax:.6f}")
+        
+        # ✅ USE DATA AS-IS - NO PHYSICAL CONSTRAINTS
+        region_vmin = data_vmin
+        region_vmax = data_vmax
+        
+        # ✅ LOG WITH APPROPRIATE UNITS
+        unit_map = {
+            'Tair': '°C',
+            'Rainf': 'mm',
+            'Wind_Speed': 'm/s',
+            'Qair': 'kg/kg',
+            'PSurf': 'Pa',
+            'SPI3': '(index)',
+            'Wind_E': 'm/s',
+            'Wind_N': 'm/s',
+            'SWdown': 'W/m²',
+            'LWdown': 'W/m²'
+        }
+        
+        unit = unit_map.get(variable, '')
+        logging.info(f"🎨 {variable} color scale: {region_vmin:.6f} to {region_vmax:.6f} {unit}")
+        
+        # ✅ OPTIONAL: Warn about unexpected ranges (but don't modify them)
+        if variable == 'Rainf' and region_vmin < -0.1:
+            logging.warning(f"⚠️ Unexpected negative precipitation: {region_vmin:.4f} mm")
+            logging.warning(f"⚠️ Possible data quality issue - but using actual range")
+        
+        if variable == 'Wind_Speed' and region_vmin < -0.1:
+            logging.warning(f"⚠️ Unexpected negative wind speed: {region_vmin:.4f} m/s")
+            logging.warning(f"⚠️ Possible data quality issue - but using actual range")
+        
+        if variable == 'Qair' and region_vmin < -0.001:
+            logging.warning(f"⚠️ Unexpected negative humidity: {region_vmin:.6f} kg/kg")
+            logging.warning(f"⚠️ Possible data quality issue - but using actual range")
+        
+        if variable == 'Tair' and (region_vmin < -90 or region_vmax > 60):
+            logging.warning(f"⚠️ Extreme temperature values: {region_vmin:.2f} to {region_vmax:.2f} °C")
+            logging.warning(f"⚠️ Check if data is in correct units (Celsius expected)")
+        
+        if variable == 'SPI3' and (region_vmin < -3.5 or region_vmax > 3.5):
+            logging.warning(f"⚠️ Extreme SPI values: {region_vmin:.2f} to {region_vmax:.2f}")
+            logging.warning(f"⚠️ Values beyond ±3 are extremely rare")
         
         ds.close()
-        logging.info(f"🎨 Region-specific scale: {region_vmin:.2f} to {region_vmax:.2f}, cmap={cmap}")
         
-    except Exception as scale_error:
-        logging.error(f"❌ Failed to calculate region scale: {scale_error}")
-        if variable == 'SPI3':
-            region_vmin, region_vmax = -2.5, 2.5
-        elif variable == 'Tair':
-            region_vmin, region_vmax = -10, 30
-        elif variable == 'Rainf':
-            region_vmin, region_vmax = 0, 50
-        else:
-            region_vmin, region_vmax = 0, 100
+    except FileNotFoundError as e:
+        logging.error(f"❌ Data file not found: {e}")
+        return {"error": f"Data not available for {variable} on {date_str}"}
+    
+    except KeyError as e:
+        logging.error(f"❌ Variable not found in dataset: {e}")
+        return {"error": f"Variable '{variable}' not found in dataset"}
+    
+    except Exception as e:
+        logging.error(f"❌ Failed to load/process data: {e}", exc_info=True)
+        return {"error": f"Failed to calculate color scale: {str(e)}"}
     
     # ✅ USE AREA-BASED ZOOM - DO NOT OVERRIDE IT
     zoom = determine_optimal_zoom_level(bounds)
@@ -311,7 +408,7 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
     
     logging.info(f"🎯 Final tile grid: {tile_count_x} × {tile_count_y} = {total_tiles} tiles at zoom {zoom}")
     
-    # ✅ FIXED: Generate tile list with cmap parameter
+    # ✅ Generate tile list with calculated color scale
     tile_list = []
     for x in range(nw_tile.x, se_tile.x + 1):
         for y in range(nw_tile.y, se_tile.y + 1):
@@ -330,7 +427,8 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
                 }
             })
     
-    logging.info(f"✅ Generated {len(tile_list)} tiles: X={nw_tile.x}-{se_tile.x}, Y={nw_tile.y}-{se_tile.y} (256x256 each)")
+    logging.info(f"✅ Generated {len(tile_list)} tiles with data-driven color scale")
+    logging.info(f"📊 Color scale summary: {region_vmin:.6f} to {region_vmax:.6f} ({len(valid_data)} data points)")
     
     return {
         "tile_url": f"http://localhost:8000/api/tiles/{variable}/{date_str}/{{z}}/{{x}}/{{y}}.png?vmin={region_vmin}&vmax={region_vmax}&cmap={cmap}",
@@ -346,61 +444,137 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
         "color_scale": {
             "vmin": float(region_vmin),
             "vmax": float(region_vmax),
-            "cmap": cmap,  # ✅ FIXED: Include cmap in color_scale
-            "variable": variable
+            "cmap": cmap,
+            "variable": variable,
+            "unit": unit,
+            "calculation_method": "percentile_2_98",
+            "data_points": len(valid_data),
+            "is_data_driven": True
         }
     }
 
-def wrap_with_geo_overlay(static_url: str, original_query: str) -> dict:
+def wrap_with_geo_overlay(static_url: str, original_query: str, bounds: dict = None) -> dict:
     """
     Produce a unified response structure containing:
     - original static map URL (static_url)
     - overlay_url (same as static for now; future: transparent variant)
     - minimal GeoJSON sampling placeholder (empty FeatureCollection)
-    - default map_config (frontend can refine)
+    - map_config (calculated from bounds if available)
     """
     logging.info("🌐 Adding unified overlay + geojson wrapper to static visualization")
+    
     geojson = {
         "type": "FeatureCollection",
         "features": []
     }
-    map_config = {
-        "style": "satellite",
-        "overlay_mode": True,
-        "center": [ -98.0, 39.0 ],  # Fallback CONUS center
-        "zoom": 5
-    }
+    
+    # ✅ Try to calculate from bounds if available
+    if bounds:
+        center = bounds_center(bounds)
+        zoom = calculate_appropriate_zoom(bounds)
+        
+        if center and zoom:
+            map_config = {
+                "style": "satellite",
+                "overlay_mode": True,
+                "center": center,
+                "zoom": zoom
+            }
+            logging.info(f"✅ Created map_config from provided bounds")
+        else:
+            # Bounds provided but calculation failed - return error
+            logging.error("❌ Bounds provided but center/zoom calculation failed")
+            map_config = None
+    else:
+        # No bounds provided - cannot create valid map_config
+        logging.warning("⚠️ No bounds provided to wrap_with_geo_overlay")
+        map_config = None
+    
     return {
         "static_url": static_url,
-        "overlay_url": None,  # distinguish that we lack a transparent overlay
+        "overlay_url": None,
         "geojson": geojson,
-        "bounds": None,
+        "bounds": bounds,
         "map_config": map_config,
         "original_query": original_query
     }
+
+def calculate_appropriate_zoom(bounds: dict) -> int:
+    """Calculate zoom based on bounds area - returns None if calculation fails"""
+    try:
+        if not bounds or None in [bounds.get("north"), bounds.get("south"), 
+                                   bounds.get("east"), bounds.get("west")]:
+            logging.warning("⚠️ Invalid bounds for zoom calculation")
+            return None
+        
+        # Use same logic as tile generation
+        return determine_optimal_zoom_level(bounds)
+    except Exception as e:
+        logging.error(f"❌ Error calculating zoom: {e}")
+        return None
+
 
 def normalize_map_result_dict(raw: dict, original_query: str) -> dict:
     """Guarantee required keys for map dict returned by generated code."""
     static_url = raw.get("static_url")
     overlay_url = raw.get("overlay_url") or raw.get("transparent_url")
-    # fallback: if only one provided treat as both
+    
+    # Fallback: if only one provided treat as both
     if overlay_url is None and static_url:
         overlay_url = static_url
     if static_url is None and overlay_url:
         static_url = overlay_url
+    
     geojson = raw.get("geojson") or {"type":"FeatureCollection","features":[]}
     bounds = raw.get("bounds") or {}
-    map_config = raw.get("map_config") or {
-        "center": bounds_center(bounds),
-        "zoom": 6,
-        "style": "satellite",
-        "overlay_mode": True
-    }
-    # Fill center if missing
-    if "center" not in map_config or not map_config["center"]:
-        map_config["center"] = bounds_center(bounds)
-    if "overlay_mode" not in map_config:
-        map_config["overlay_mode"] = True
+    
+    # ✅ Calculate center and zoom dynamically from bounds
+    center = bounds_center(bounds)
+    zoom = calculate_appropriate_zoom(bounds)
+    
+    # ✅ Only use fallbacks if calculation failed AND no map_config provided
+    map_config = raw.get("map_config")
+    
+    if not map_config:
+        # No map_config provided - create one from bounds
+        if center is None or zoom is None:
+            logging.error("❌ Cannot create map_config: bounds calculation failed and no config provided")
+            # Return error - don't use arbitrary defaults
+            return {
+                "error": "Invalid bounds - cannot determine map center and zoom",
+                "static_url": static_url,
+                "overlay_url": overlay_url,
+                "geojson": geojson,
+                "bounds": bounds,
+                "original_query": original_query
+            }
+        
+        map_config = {
+            "center": center,
+            "zoom": zoom,
+            "style": "satellite",
+            "overlay_mode": True
+        }
+        logging.info(f"✅ Created map_config from bounds: center={center}, zoom={zoom}")
+    else:
+        # map_config exists - fill in missing values from bounds
+        if "center" not in map_config or not map_config["center"]:
+            if center:
+                map_config["center"] = center
+                logging.info(f"✅ Filled missing center from bounds: {center}")
+            else:
+                logging.warning("⚠️ Cannot fill center - bounds calculation failed")
+        
+        if "zoom" not in map_config or not map_config["zoom"]:
+            if zoom:
+                map_config["zoom"] = zoom
+                logging.info(f"✅ Filled missing zoom from bounds: {zoom}")
+            else:
+                logging.warning("⚠️ Cannot fill zoom - bounds calculation failed")
+        
+        if "overlay_mode" not in map_config:
+            map_config["overlay_mode"] = True
+    
     return {
         "static_url": static_url,
         "overlay_url": overlay_url,
@@ -498,14 +672,39 @@ def build_temperature_data(geojson: dict, target_max_points: int = 2500) -> list
     return results
 
 def bounds_center(bounds: dict):
-    """Calculate center point from bounds"""
+    """Calculate center point from bounds - returns None if calculation fails"""
     try:
+        east = bounds.get("east")
+        west = bounds.get("west")
+        north = bounds.get("north")
+        south = bounds.get("south")
+        
+        # Validate all bounds exist
+        if None in [east, west, north, south]:
+            logging.warning("⚠️ Missing bounds values for center calculation")
+            return None
+            
         return [
-            float((bounds.get("east")+bounds.get("west"))/2),
-            float((bounds.get("north")+bounds.get("south"))/2)
+            float((east + west) / 2),
+            float((north + south) / 2)
         ]
-    except Exception:
-        return [-98.0, 39.0]
+    except Exception as e:
+        logging.error(f"❌ Error calculating bounds center: {e}")
+        return None  # ✅ Return None instead of arbitrary coordinates
+    
+def calculate_appropriate_zoom(bounds: dict) -> int:
+    """Calculate zoom based on bounds area - returns None if calculation fails"""
+    try:
+        if not bounds or None in [bounds.get("north"), bounds.get("south"), 
+                                   bounds.get("east"), bounds.get("west")]:
+            logging.warning("⚠️ Invalid bounds for zoom calculation")
+            return None
+        
+        # Use same logic as tile generation
+        return determine_optimal_zoom_level(bounds)
+    except Exception as e:
+        logging.error(f"❌ Error calculating zoom: {e}")
+        return None
 
 def should_use_tiles(user_query: str, map_data: dict) -> bool:
     """
@@ -673,6 +872,77 @@ def extract_analysis_info(query: str, result: dict, memory_context: str = "") ->
         "date_str": date_str
     }
 
+def extract_query_intent(query: str) -> dict:
+    """
+    Quickly extract location, date, and variable from query without executing code.
+    This allows us to store context immediately for follow-up queries.
+    """
+    import re
+    
+    query_lower = query.lower()
+    intent = {}
+    
+    # Extract location
+    locations = {
+        'calgary': 'calgary',
+        'maryland': 'maryland',
+        'florida': 'florida',
+        'california': 'california',
+        'texas': 'texas',
+        'alaska': 'alaska',
+        'chicago': 'chicago',
+        'new york': 'new_york',
+        'toronto': 'toronto',
+        'vancouver': 'vancouver'
+    }
+    
+    for key, value in locations.items():
+        if key in query_lower:
+            intent['location'] = value
+            break
+    
+    # Extract date
+    year_match = re.search(r'(20\d{2})', query)
+    if year_match:
+        year = int(year_match.group(1))
+        intent['year'] = year
+        
+        # Try to find month
+        month_names = ['january','february','march','april','may','june',
+                       'july','august','september','october','november','december']
+        month_match = re.search(r'(' + '|'.join(month_names) + ')', query_lower)
+        if month_match:
+            month = month_names.index(month_match.group(1)) + 1
+            intent['month'] = month
+            
+            # Try to find day
+            day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', query)
+            if day_match:
+                day = int(day_match.group(1))
+                if 1 <= day <= 31:
+                    intent['day'] = day
+                    intent['date'] = f"{year}-{month:02d}-{day:02d}"
+                else:
+                    intent['date'] = f"{year}-{month:02d}"
+            else:
+                intent['date'] = f"{year}-{month:02d}"
+    
+    # Extract variable
+    if any(word in query_lower for word in ['temperature', 'temp']):
+        intent['variable'] = 'Tair'
+    elif any(word in query_lower for word in ['wind', 'wind speed']):
+        intent['variable'] = 'Wind_Speed'
+    elif any(word in query_lower for word in ['precipitation', 'rain', 'rainfall']):
+        intent['variable'] = 'Rainf'
+    elif any(word in query_lower for word in ['humidity', 'humid']):
+        intent['variable'] = 'Qair'
+    elif any(word in query_lower for word in ['pressure']):
+        intent['variable'] = 'PSurf'
+    elif any(word in query_lower for word in ['drought', 'spi']):
+        intent['variable'] = 'SPI3'
+    
+    return intent if intent else None
+
 def handle_chat_request(data):
     """Handle chat requests with memory, timing, enhanced error handling, and analysis detection"""
     # ===== PERFORMANCE TIMING: Start =====
@@ -684,10 +954,30 @@ def handle_chat_request(data):
         t1 = time.time()
         user_query = data.get("input", data.get("query", "Tell me about NLDAS-3 data"))
         logging.info(f"Processing chat request: {user_query}")
-        
+
         # Get user_id from request data
         user_id = data.get("user_id", f"anonymous_{hash(user_query) % 10000}")
         logging.info(f"👤 User ID: {user_id}")
+
+        # ✅ NEW: Immediately extract and store query intent (BEFORE execution starts)
+        query_intent = extract_query_intent(user_query)
+        if query_intent:
+            memory_manager.add(
+                f"Query intent: {user_query}\nExtracted: Location={query_intent.get('location', 'unknown')}, "
+                f"Date={query_intent.get('date', 'unknown')}, Variable={query_intent.get('variable', 'unknown')}",
+                user_id,
+                {
+                    "type": "query_intent",
+                    "query": user_query,
+                    "location": query_intent.get('location'),
+                    "date": query_intent.get('date'),
+                    "variable": query_intent.get('variable'),
+                    "status": "pending",
+                    "timestamp": time.time()
+                }
+            )
+            logging.info(f"💾 Stored query intent immediately for {user_id}: {query_intent}")
+
 
         # ===== MEMORY RETRIEVAL =====
         t2 = time.time()
