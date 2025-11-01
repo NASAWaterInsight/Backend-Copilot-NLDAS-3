@@ -154,11 +154,6 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
     """
     Create tile configuration with dynamically calculated color scales from actual data.
     No hardcoded ranges - always derive from the dataset.
-    
-    Args:
-        map_data: Map result with bounds
-        user_query: Original user query
-        date_info: Pre-extracted date info from extract_analysis_info() (optional)
     """
     import re
     import mercantile
@@ -168,22 +163,52 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
         variable = date_info.get("variable", "Tair")
         date_str = date_info.get("date_str")
         
-        # Parse date_str to get year, month, day
+        # 🔧 IMPROVED: Parse date_str with validation
         if date_str:
-            date_parts = date_str.split('-')
-            year = int(date_parts[0])
-            month = int(date_parts[1])
-            day = int(date_parts[2]) if len(date_parts) > 2 else None
-            
-            logging.info(f"🗓️ Using pre-extracted date info: {date_str}, {variable}")
+            try:
+                # Clean up potential range formats
+                # "2012-06 to 2012-08" → "2012-08" (use end date)
+                # "06 to 2012" → invalid, try to extract
+                if " to " in date_str:
+                    logging.warning(f"⚠️ Date range detected in tile config: {date_str}")
+                    # Take the second date (end date) for ranges
+                    parts = date_str.split(" to ")
+                    date_str = parts[-1].strip()
+                    logging.info(f"📅 Using end date for tiles: {date_str}")
+                
+                # Now parse the cleaned date_str
+                date_parts = date_str.split('-')
+                
+                # Validate we have at least year and month
+                if len(date_parts) < 2:
+                    raise ValueError(f"Invalid date format: {date_str} (need YYYY-MM or YYYY-MM-DD)")
+                
+                year = int(date_parts[0])
+                month = int(date_parts[1])
+                day = int(date_parts[2]) if len(date_parts) > 2 else None
+                
+                # Validate ranges
+                if not (2000 <= year <= 2030):
+                    raise ValueError(f"Invalid year: {year}")
+                if not (1 <= month <= 12):
+                    raise ValueError(f"Invalid month: {month}")
+                if day and not (1 <= day <= 31):
+                    raise ValueError(f"Invalid day: {day}")
+                
+                logging.info(f"🗓️ Parsed date: year={year}, month={month}, day={day}")
+                
+            except (ValueError, IndexError) as e:
+                logging.error(f"❌ Failed to parse date '{date_str}': {e}")
+                return {"error": f"Invalid date format in metadata: '{date_str}'. Expected YYYY-MM or YYYY-MM-DD"}
         else:
             return {"error": "No date in extracted info"}
     else:
-        # Fall back to query parsing
+        # Fall back to query parsing (your existing code)
         year_match = re.search(r'(20\d{2})', user_query)
         if not year_match:
             return {"error": "No year specified in query"}
         year = int(year_match.group(1))
+        
         
         month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', user_query.lower())
         if not month_match:
@@ -191,8 +216,10 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
         month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
         month = month_names.index(month_match.group(1)) + 1
         
-        variable = 'Tair'  # Default
-        if any(word in user_query.lower() for word in ['precipitation', 'rain', 'rainfall']):
+        # Explicit variable detection - order matters!
+        if any(word in user_query.lower() for word in ['temperature', 'temp']):
+            variable = 'Tair'
+        elif any(word in user_query.lower() for word in ['precipitation', 'rain', 'rainfall', 'precip']):
             variable = 'Rainf'
         elif any(word in user_query.lower() for word in ['drought', 'spi']):
             variable = 'SPI3'
@@ -202,6 +229,10 @@ def create_tile_config(map_data: dict, user_query: str, date_info: dict = None) 
             variable = 'Qair'
         elif any(word in user_query.lower() for word in ['pressure']):
             variable = 'PSurf'
+        else:
+            # ❌ NO DEFAULT - ask user what they want
+            result = "Please specify what weather variable you want (temperature, precipitation, wind, drought/SPI, etc.)"
+            return result
         
         # For daily variables, require day specification
         day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', user_query)
@@ -833,22 +864,68 @@ def extract_analysis_info(query: str, result: dict, memory_context: str = "") ->
                 break
     
     # ✅ Extract date (if not already from metadata)
-    if not date_str:
-        year = None
-        month = None
-        day = None
-        
-        if any(word in query_lower for word in ['same', 'similar', 'that', 'this']):
-            # Extract date from memory (format: "2023-06-15" or "2023-06")
-            memory_date_match = re.search(r'on (\d{4}-\d{2}(?:-\d{2})?)', memory_context)
-            if memory_date_match:
-                date_str = memory_date_match.group(1)
-                logging.info(f"📅 Extracted date from memory: {date_str}")
-        
-        # If not found in memory, extract from query
+    # ✅ Extract date (if not already from metadata)
         if not date_str:
+            year = None
+            month = None
+            day = None
+            
+            # 🔧 FIX 1: Try to extract date from current query FIRST
             year_match = re.search(r'(20\d{2})', query)
-            year = int(year_match.group(1)) if year_match else 2023
+            month_names = ['january','february','march','april','may','june',
+                        'july','august','september','october','november','december']
+            month_match = re.search(r'(' + '|'.join(month_names) + ')', query_lower)
+            
+            # If year found in query, use it
+            if year_match:
+                year = int(year_match.group(1))
+            
+            # If month found in query, use it
+            if month_match:
+                month = month_names.index(month_match.group(1)) + 1
+            
+            # 🔧 FIX 2: If NO date in query, check memory (for any query, not just "same")
+            if not year and memory_context:
+                # Extract date from memory context
+                memory_date_match = re.search(r'(\d{4}-\d{2}(?:-\d{2})?)', memory_context)
+                if memory_date_match:
+                    date_parts = memory_date_match.group(1).split('-')
+                    year = int(date_parts[0])
+                    month = int(date_parts[1])
+                    if len(date_parts) > 2:
+                        day = int(date_parts[2])
+                    logging.info(f"📅 Using date from recent context: {year}-{month:02d}")
+            
+            # 🔧 FIX 3: If still no date, return error instead of defaulting
+            if not year or not month:
+                logging.error(f"❌ No date found in query or memory")
+                return {
+                    "error": "Please specify a date (e.g., 'January 2023' or 'March 15, 2023')"
+                }
+            
+            # Extract day if needed (for non-SPI variables)
+            if variable != "SPI3":
+                day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', query)
+                if day_match:
+                    day = int(day_match.group(1))
+                elif not day and memory_context:
+                    # Check memory for day
+                    memory_day_match = re.search(r'-(\d{2})$', memory_context)
+                    if memory_day_match:
+                        day = int(memory_day_match.group(1))
+                
+                if not day:
+                    return {
+                        "error": f"Please specify a day for {variable} data (e.g., 'January 15, 2023')"
+                    }
+            
+            # Build date string
+            if variable == "SPI3":
+                date_str = f"{year}-{month:02d}"
+            else:
+                date_str = f"{year}-{month:02d}-{day:02d}"
+            
+            logging.info(f"📅 Final date: {date_str}")
             
             month_names = ['january','february','march','april','may','june','july','august','september','october','november','december']
             month_match = re.search(r'(' + '|'.join(month_names) + ')', query_lower)
@@ -943,6 +1020,8 @@ def extract_query_intent(query: str) -> dict:
     
     return intent if intent else None
 
+
+
 def handle_chat_request(data):
     """Handle chat requests with memory, timing, enhanced error handling, and analysis detection"""
     # ===== PERFORMANCE TIMING: Start =====
@@ -960,23 +1039,27 @@ def handle_chat_request(data):
         logging.info(f"👤 User ID: {user_id}")
 
         # ✅ NEW: Immediately extract and store query intent (BEFORE execution starts)
+        # ✅ NEW CODE (always stores, then adds structured intent if available):
+
+        # STEP 1: ALWAYS store the raw query
+        memory_manager.add(
+            f"User: {user_query}",
+            user_id,
+            {
+                "type": "conversation",
+                "role": "user",
+                "content": user_query,
+                "timestamp": time.time()
+            }
+        )
+        logging.info(f"💾 Stored user query in memory: {user_query[:50]}...")
+
+        # STEP 2: OPTIONALLY add structured intent if extractable
         query_intent = extract_query_intent(user_query)
         if query_intent:
-            memory_manager.add(
-                f"Query intent: {user_query}\nExtracted: Location={query_intent.get('location', 'unknown')}, "
-                f"Date={query_intent.get('date', 'unknown')}, Variable={query_intent.get('variable', 'unknown')}",
-                user_id,
-                {
-                    "type": "query_intent",
-                    "query": user_query,
-                    "location": query_intent.get('location'),
-                    "date": query_intent.get('date'),
-                    "variable": query_intent.get('variable'),
-                    "status": "pending",
-                    "timestamp": time.time()
-                }
-            )
-            logging.info(f"💾 Stored query intent immediately for {user_id}: {query_intent}")
+            logging.info(f"💡 Extracted intent: {query_intent}")
+            # You could store this separately or just log it
+            # (the raw query is already stored above)
 
 
         # ===== MEMORY RETRIEVAL =====

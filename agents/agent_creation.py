@@ -206,15 +206,15 @@ CRITICAL: ONLY use these exact function names (no others exist):
 - save_computed_data_to_blob(data_array, lon_array, lat_array, metadata, account_key)
 - create_cartopy_map(lon, lat, data, title, colorbar_label, cmap)
 
-🚨 CRITICAL: DYNAMIC ZOOM CALCULATION
-NEVER hardcode zoom levels. ALWAYS calculate zoom dynamically based on region size:
+🚨 CRITICAL: ZOOM CALCULATION HELPER FUNCTION
+Include this function in EVERY generated code that creates map_config:
 ```python
-def calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max):
+def calculate_zoom(lat_min, lat_max, lon_min, lon_max):
+    \"\"\"Calculate appropriate zoom level based on region size\"\"\"
     lat_span = lat_max - lat_min
     lon_span = lon_max - lon_min
     area = lat_span * lon_span
     
-    # Area-based zoom selection
     if area < 1: return 9      # Cities
     elif area < 10: return 8   # Small states (Maryland)
     elif area < 50: return 7   # Medium states (Florida)
@@ -222,13 +222,15 @@ def calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max):
     elif area < 500: return 5  # Huge states (Alaska)
     elif area < 2000: return 4 # Multi-state regions
     else: return 3             # Continental scale
+```
 
-# ALWAYS use this function to calculate zoom:
-zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+Then use it:
+```python
+zoom = calculate_zoom(lat_min, lat_max, lon_min, lon_max)
 map_config = {
-    "center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], 
-    "zoom": zoom,  # ✅ Dynamic zoom based on region size
-    "style": "satellite", 
+    "center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2],
+    "zoom": zoom,
+    "style": "satellite",
     "overlay_mode": True
 }
 ```
@@ -578,8 +580,8 @@ colors = ['#8B0000','#CD0000','#FF0000','#FF4500','#FFA500','#FFFF00','#90EE90',
 cmap = LinearSegmentedColormap.from_list('spi_overlay', colors, N=256)
 ```
 
-🚨 CRITICAL: For flash drought queries use this example for python coding using SPI:
-```python
+🚨 CRITICAL: For flash drought queries use this example:
+````python
 import builtins
 
 # Define Great Plains region coordinates
@@ -634,18 +636,42 @@ plt.close(fig)
 ds_june.close()
 ds_august.close()
 
+# ✅ FIXED: Added complete metadata
+def calculate_zoom(lat_min, lat_max, lon_min, lon_max):
+    area = (lat_max - lat_min) * (lon_max - lon_min)
+    if area < 1: return 9
+    elif area < 10: return 8
+    elif area < 50: return 7
+    elif area < 150: return 6
+    elif area < 500: return 5
+    elif area < 2000: return 4
+    else: return 3
+
+zoom = calculate_zoom(lat_min, lat_max, lon_min, lon_max)
+
 result = {
     "static_url": url,
-    "overlay_url": url,  # Same for now
+    "overlay_url": url,
     "geojson": {"type": "FeatureCollection", "features": []},
-    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    # Calculate zoom based on region size
-    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
-    map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
+    "bounds": {"north": float(lat_max), "south": float(lat_min), "east": float(lon_max), "west": float(lon_min)},
+    "map_config": {"center": [float((lon_min+lon_max)/2), float((lat_min+lat_max)/2)], "zoom": zoom, "style": "satellite", "overlay_mode": True},
+    "metadata": {  # ✅ CRITICAL: Added metadata
+        "variable": "SPI3",
+        "date": "2012-08",  # Use ending date
+        "year": 2012,
+        "month": 8,
+        "day": None,
+        "region": "great_plains",
+        "computation_type": "difference",
+        "computation_description": "Flash drought Jun-Aug 2012",
+        "color_scale": {"vmin": float(delta_vmin), "vmax": float(delta_vmax), "cmap": "RdBu"}
+    }
 }
-```
+````
 
-🚨 CRITICAL: For drought recovery queries use this example for python coding using SPI:
+### Fixed Drought Recovery Example:
+````python
+🚨 CRITICAL: For drought recovery queries use this example:
 ```python
 import builtins
 
@@ -701,14 +727,36 @@ plt.close(fig)
 ds_dec_2012.close()
 ds_dec_2013.close()
 
+# ✅ FIXED: Added complete metadata
+def calculate_zoom(lat_min, lat_max, lon_min, lon_max):
+    area = (lat_max - lat_min) * (lon_max - lon_min)
+    if area < 1: return 9
+    elif area < 10: return 8
+    elif area < 50: return 7
+    elif area < 150: return 6
+    elif area < 500: return 5
+    elif area < 2000: return 4
+    else: return 3
+
+zoom = calculate_zoom(lat_min, lat_max, lon_min, lon_max)
+
 result = {
     "static_url": url,
-    "overlay_url": url,  # Same for now
+    "overlay_url": url,
     "geojson": {"type": "FeatureCollection", "features": []},
-    "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
-    # Calculate zoom based on region size
-    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
-    map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
+    "bounds": {"north": float(lat_max), "south": float(lat_min), "east": float(lon_max), "west": float(lon_min)},
+    "map_config": {"center": [float((lon_min+lon_max)/2), float((lat_min+lat_max)/2)], "zoom": zoom, "style": "satellite", "overlay_mode": True},
+    "metadata": {  # ✅ CRITICAL: Added metadata
+        "variable": "SPI3",
+        "date": "2013-12",  # Use ending date
+        "year": 2013,
+        "month": 12,
+        "day": None,
+        "region": "southeast",
+        "computation_type": "difference",
+        "computation_description": "Drought recovery Dec 2012-Dec 2013",
+        "color_scale": {"vmin": float(delta_vmin), "vmax": float(delta_vmax), "cmap": "RdBu"}
+    }
 }
 ```
 
@@ -761,10 +809,9 @@ elif 'mexico' in user_query_lower:
     lon_min, lon_max = -118.4, -86.7
     region_name = 'Mexico'
 else:
-    # Default to Maryland if no region detected
-    lat_min, lat_max = 38.8, 39.8
-    lon_min, lon_max = -79.5, -75.0
-    region_name = 'Maryland'
+    # No region detected - ask user to specify
+    result = "Please specify a location (e.g., Florida, California, Texas, etc.)"
+    return result
 
 # Extract year and month from user request
 import re
@@ -777,18 +824,20 @@ is_trend_query = any(word in user_request.lower() for word in trend_keywords)
 # Month detection ONLY IF NOT a trend
 month = None
 if not is_trend_query:
-    month_match = re.search(
-        r'(january|february|march|april|may|june|july|august|september|october|november|december)',
-        user_request.lower()
-    )
-    if month_match:
-        month_names = ['january','february','march','april','may','june',
-                       'july','august','september','october','november','december']
-        month = month_names.index(month_match.group(1)) + 1
+    month_match = re.search(r'(january|february|...|december)', user_request.lower())
+    if not month_match:
+        result = "Please specify a month (e.g., January, March, October)"
+        return result
+
+    month_names = ['january', 'february', ..., 'december']
+    month = month_names.index(month_match.group(1)) + 1
 
 # Year detection
 year_match = re.search(r'(20\d{2})', user_request)
-year = int(year_match.group(1)) if year_match else 2020
+if not year_match:
+    result = "Please specify a year for the analysis (e.g., 2023)"
+    return result
+year = int(year_match.group(1))
 
 # FINAL behavior selection
 if is_trend_query:
@@ -851,7 +900,18 @@ else:
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
     # Calculate zoom based on region size
-    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    # Calculate zoom based on region size
+    def calculate_zoom(lat_min, lat_max, lon_min, lon_max):
+        area = (lat_max - lat_min) * (lon_max - lon_min)
+        if area < 1: return 9
+        elif area < 10: return 8
+        elif area < 50: return 7
+        elif area < 150: return 6
+        elif area < 500: return 5
+        elif area < 2000: return 4
+        else: return 3
+
+    zoom = calculate_zoom(lat_min, lat_max, lon_max, lon_min)
     map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
 ```
@@ -873,7 +933,18 @@ try:
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
     # Calculate zoom based on region size
-    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    # Calculate zoom based on region size
+    def calculate_zoom(lat_min, lat_max, lon_min, lon_max):
+        area = (lat_max - lat_min) * (lon_max - lon_min)
+        if area < 1: return 9
+        elif area < 10: return 8
+        elif area < 50: return 7
+        elif area < 150: return 6
+        elif area < 500: return 5
+        elif area < 2000: return 4
+        else: return 3
+
+    zoom = calculate_zoom(lat_min, lat_max, lon_max, lon_min)
     map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
     
@@ -894,7 +965,18 @@ except Exception as e:
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
     # Calculate zoom based on region size
-    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    # Calculate zoom based on region size
+    def calculate_zoom(lat_min, lat_max, lon_min, lon_max):
+        area = (lat_max - lat_min) * (lon_max - lon_min)
+        if area < 1: return 9
+        elif area < 10: return 8
+        elif area < 50: return 7
+        elif area < 150: return 6
+        elif area < 500: return 5
+        elif area < 2000: return 4
+        else: return 3
+
+    zoom = calculate_zoom(lat_min, lat_max, lon_max, lon_min)
     map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
 ```
@@ -963,7 +1045,18 @@ result = {
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
     # Calculate zoom based on region size
-    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    # Calculate zoom based on region size
+    def calculate_zoom(lat_min, lat_max, lon_min, lon_max):
+        area = (lat_max - lat_min) * (lon_max - lon_min)
+        if area < 1: return 9
+        elif area < 10: return 8
+        elif area < 50: return 7
+        elif area < 150: return 6
+        elif area < 500: return 5
+        elif area < 2000: return 4
+        else: return 3
+
+    zoom = calculate_zoom(lat_min, lat_max, lon_max, lon_min)
     map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
 ```
@@ -1070,7 +1163,18 @@ result = {
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
     # Calculate zoom based on region size
-    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    # Calculate zoom based on region size
+    def calculate_zoom(lat_min, lat_max, lon_min, lon_max):
+        area = (lat_max - lat_min) * (lon_max - lon_min)
+        if area < 1: return 9
+        elif area < 10: return 8
+        elif area < 50: return 7
+        elif area < 150: return 6
+        elif area < 500: return 5
+        elif area < 2000: return 4
+        else: return 3
+
+    zoom = calculate_zoom(lat_min, lat_max, lon_max, lon_min)
     map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
 ```
@@ -1230,7 +1334,18 @@ try:
     "geojson": {"type": "FeatureCollection", "features": []},
     "bounds": {"north": lat_max, "south": lat_min, "east": lon_max, "west": lon_min},
     # Calculate zoom based on region size
-    zoom = calculate_zoom_from_bounds(lat_min, lat_max, lon_min, lon_max)
+    # Calculate zoom based on region size
+    def calculate_zoom(lat_min, lat_max, lon_min, lon_max):
+        area = (lat_max - lat_min) * (lon_max - lon_min)
+        if area < 1: return 9
+        elif area < 10: return 8
+        elif area < 50: return 7
+        elif area < 150: return 6
+        elif area < 500: return 5
+        elif area < 2000: return 4
+        else: return 3
+
+    zoom = calculate_zoom(lat_min, lat_max, lon_max, lon_min)
     map_config = {"center": [(lon_min+lon_max)/2, (lat_min+lat_max)/2], "zoom": zoom, "style": "satellite", "overlay_mode": True}
 }
     
